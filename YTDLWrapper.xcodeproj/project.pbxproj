@@ -6,6 +6,10 @@
 	objectVersion = 110;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		E4731B962FFDC517000517F7 /* yt-dlp_macos in Resources */ = {isa = PBXBuildFile; fileRef = E4731B952FFDC517000517F7 /* yt-dlp_macos */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		E4731B7A2FFDC4B7000517F7 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -27,6 +31,7 @@
 		E4731B6C2FFDC4B5000517F7 /* YTDLWrapper.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = YTDLWrapper.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		E4731B792FFDC4B7000517F7 /* YTDLWrapperTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = YTDLWrapperTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		E4731B832FFDC4B8000517F7 /* YTDLWrapperUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = YTDLWrapperUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		E4731B952FFDC517000517F7 /* yt-dlp_macos */ = {isa = PBXFileReference; lastKnownFileType = "compiled.mach-o.executable"; path = "yt-dlp_macos"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -69,6 +74,7 @@
 		E4731B632FFDC4B5000517F7 = {
 			isa = PBXGroup;
 			children = (
+				E4731B942FFDC4CD000517F7 /* Resources */,
 				E4731B6E2FFDC4B5000517F7 /* YTDLWrapper */,
 				E4731B7C2FFDC4B7000517F7 /* YTDLWrapperTests */,
 				E4731B862FFDC4B8000517F7 /* YTDLWrapperUITests */,
@@ -86,6 +92,14 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
+		E4731B942FFDC4CD000517F7 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				E4731B952FFDC517000517F7 /* yt-dlp_macos */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -96,6 +110,7 @@
 				E4731B682FFDC4B5000517F7 /* Sources */,
 				E4731B692FFDC4B5000517F7 /* Frameworks */,
 				E4731B6A2FFDC4B5000517F7 /* Resources */,
+				E4731B972FFDC540000517F7 /* ShellScript */,
 			);
 			buildRules = (
 			);
@@ -197,6 +212,7 @@
 		E4731B6A2FFDC4B5000517F7 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			files = (
+				E4731B962FFDC517000517F7 /* yt-dlp_macos in Resources */,
 			);
 		};
 		E4731B772FFDC4B7000517F7 /* Resources */ = {
@@ -210,6 +226,18 @@
 			);
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		E4731B972FFDC540000517F7 /* ShellScript */ = {
+			isa = PBXShellScriptBuildPhase;
+			shellPath = /bin/sh;
+			shellScript = (
+				"# Type a script or drag a script file from your workspace to insert its path.",
+				"chmod +x \"${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/yt-dlp_macos\"",
+				"",
+			);
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		E4731B682FFDC4B5000517F7 /* Sources */ = {
@@ -372,10 +400,9 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = WNR4VX99N4;
-				ENABLE_APP_SANDBOX = YES;
+				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
-				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -404,10 +431,9 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = WNR4VX99N4;
-				ENABLE_APP_SANDBOX = YES;
+				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
-				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
