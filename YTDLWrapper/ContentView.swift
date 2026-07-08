@@ -14,9 +14,6 @@ struct ContentView: View {
             Text("Hello, world!")
         }
         .padding()
-        .onAppear {
-            testYtDlp()
-        }
     }
 
     func testYtDlp() {
