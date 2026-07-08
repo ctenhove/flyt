@@ -7,6 +7,7 @@
 
 import XCTest
 
+/// UI tests for the YTDLWrapper app, driven through XCUIAutomation.
 final class YTDLWrapperUITests: XCTestCase {
 
     override func setUpWithError() throws {
@@ -22,6 +23,7 @@ final class YTDLWrapperUITests: XCTestCase {
         // Put teardown code here. This method is called after the invocation of each test method in the class.
     }
 
+    /// Placeholder UI test from the Xcode template; launches the app.
     @MainActor
     func testExample() throws {
         // UI tests must launch the application that they test.
@@ -33,6 +35,7 @@ final class YTDLWrapperUITests: XCTestCase {
         // https://developer.apple.com/documentation/xcuiautomation
     }
 
+    /// Measures cold-launch time of the app.
     @MainActor
     func testLaunchPerformance() throws {
         // This measures how long it takes to launch your application.

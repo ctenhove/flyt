@@ -7,6 +7,7 @@
 
 import SwiftUI
 
+/// App entry point: opens a single window containing `ContentView`.
 @main
 struct YTDLWrapperApp: App {
     var body: some Scene {
