@@ -10,6 +10,7 @@ import SwiftUI
 /// The app's main window: a URL field plus buttons for checking the yt-dlp
 /// version and fetching video metadata, with results shown below.
 struct ContentView: View {
+    let dependencyManager: DependencyManager
     /// Model that runs the yt-dlp binary; observed so results update the UI.
     @State private var model = YtDlpModel()
     /// The video URL typed or pasted by the user.
@@ -72,8 +73,4 @@ struct ContentView: View {
         .padding()
         .frame(width: 480, height: 340)
     }
-}
-
-#Preview {
-    ContentView()
 }

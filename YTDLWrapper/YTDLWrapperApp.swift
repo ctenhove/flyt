@@ -7,12 +7,28 @@
 
 import SwiftUI
 
-/// App entry point: opens a single window containing `ContentView`.
 @main
 struct YTDLWrapperApp: App {
+    @State private var dependencyManager = DependencyManager()
+
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            Group {
+                switch dependencyManager.setupState {
+                case .ready:
+                    ContentView(dependencyManager: dependencyManager)
+                default:
+                    SetupView(
+                        state: dependencyManager.setupState,
+                        onRetry: {
+                            Task { await dependencyManager.performSetupIfNeeded() }
+                        }
+                    )
+                }
+            }
+            .task {
+                await dependencyManager.performSetupIfNeeded()
+            }
         }
     }
 }

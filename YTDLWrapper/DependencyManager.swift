@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import Observation
 
 enum DependencyError: LocalizedError {
     case downloadFailed
@@ -23,7 +24,36 @@ enum DependencyError: LocalizedError {
     }
 }
 
+@Observable
 class DependencyManager {
+    
+    enum SetupState {
+        case checking
+        case downloading
+        case ready
+        case failed(String)
+    }
+
+    var setupState: SetupState = .checking
+    
+    @MainActor
+    func performSetupIfNeeded() async {
+        setupState = .checking
+
+        if isFFmpegInstalled() {
+            setupState = .ready
+            return
+        }
+
+        setupState = .downloading
+
+        do {
+            try await installFFmpeg()
+            setupState = .ready
+        } catch {
+            setupState = .failed(error.localizedDescription)
+        }
+    }
     
     // The app's dedicated folder inside Application Support
     private var appSupportDirectory: URL {
