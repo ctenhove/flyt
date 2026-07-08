@@ -8,36 +8,27 @@
 import SwiftUI
 
 struct ContentView: View {
+    @State private var model = YtDlpModel()
+    
     var body: some View {
-        VStack {
-            Image(systemName: "globe")
-            Text("Hello, world!")
+        VStack(spacing: 16) {
+            Button("Check yt-dlp version") {
+                model.runVersion()
+            }
+
+            if model.isLoading {
+                ProgressView()
+            }
+
+            Text(model.output)
+
+            if let error = model.errorMessage {
+                Text(error)
+                    .foregroundStyle(.red)
+            }
         }
         .padding()
-    }
-
-    func testYtDlp() {
-        guard let toolURL = Bundle.main.url(forResource: "yt-dlp_macos", withExtension: nil) else {
-            print("Binary not found in bundle")
-            return
-        }
-
-        let process = Process()
-        process.executableURL = toolURL
-        process.arguments = ["--version"]
-
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            print(String(data: data, encoding: .utf8) ?? "no output")
-        } catch {
-            print("Failed to launch: \(error)")
-        }
+        .frame(width: 400, height: 200)
     }
 }
 
