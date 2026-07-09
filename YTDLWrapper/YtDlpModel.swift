@@ -8,6 +8,22 @@
 import Foundation
 import Observation
 
+enum DownloadPhase {
+    case idle
+    case downloadingVideo
+    case downloadingAudio
+    case merging
+
+    var label: String {
+        switch self {
+        case .idle: return ""
+        case .downloadingVideo: return "Downloading video…"
+        case .downloadingAudio: return "Downloading audio…"
+        case .merging: return "Merging…"
+        }
+    }
+}
+
 /// Metadata about a video, decoded from yt-dlp's `--dump-json` output.
 /// Only the fields the app needs are declared; the decoder ignores the rest.
 struct VideoInfo: Codable {
@@ -38,9 +54,17 @@ class YtDlpModel {
     var downloadProgress: Double = 0.0
     /// True while a download is in progress.
     var isDownloading = false
+    var downloadPhase: DownloadPhase = .idle
     var lastDownloadedFile: URL?
     var isBusy: Bool {
         isLoading || isDownloading
+    }
+    
+    private var destinationCount = 0
+    private let dependencyManager: DependencyManager
+    
+    init(dependencyManager: DependencyManager) {
+        self.dependencyManager = dependencyManager
     }
 
     /// Runs the bundled yt-dlp binary with the given arguments and returns
@@ -113,8 +137,22 @@ class YtDlpModel {
                 let data = fileHandle.availableData
                 guard !data.isEmpty, let line = String(data: data, encoding: .utf8) else { return }
 
-                print("yt-dlp stdout: \(line)")
-                
+                // Detect a new stream starting (Destination line)
+                if line.contains("[download] Destination:") {
+                    Task { @MainActor in
+                        self.destinationCount += 1
+                        self.downloadPhase = self.destinationCount == 1 ? .downloadingVideo : .downloadingAudio
+                        self.downloadProgress = 0.0
+                    }
+                }
+
+                // Detect the merge phase
+                if line.contains("[Merger]") {
+                    Task { @MainActor in
+                        self.downloadPhase = .merging
+                    }
+                }
+
                 if let percent = Self.parseProgress(from: line) {
                     Task { @MainActor in
                         self.downloadProgress = percent
@@ -229,20 +267,21 @@ class YtDlpModel {
         isDownloading = true
         downloadProgress = 0.0
         errorMessage = nil
+        downloadPhase = .downloadingVideo
+        destinationCount = 0
 
         Task {
             do {
                 try await runWithProgress(args: [
-                    // --newline makes yt-dlp emit each progress update on its
-                    // own line, which the progress parser relies on.
                     "--newline",
-                    // Save as "<video title>.<extension>" in Downloads.
+                    "--ffmpeg-location", dependencyManager.ffmpegURL.path,
                     "-o", "\(downloadsDirectory.path)/%(title)s.%(ext)s",
                     urlString
                 ])
                 await MainActor.run {
                     self.isDownloading = false
                     self.downloadProgress = 1.0
+                    self.downloadPhase = .idle
                 }
             } catch {
                 await MainActor.run {
