@@ -8,6 +8,7 @@
 import Foundation
 import Observation
 
+/// The user-visible stage of an in-flight download.
 enum DownloadPhase {
     case idle
     case downloadingVideo
@@ -24,14 +25,24 @@ enum DownloadPhase {
     }
 }
 
+enum YtDlpError: LocalizedError {
+    case binaryNotFound
+    case processFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .binaryNotFound: return "The bundled yt-dlp binary is missing."
+        case .processFailed(let detail): return detail
+        }
+    }
+}
+
 /// Metadata about a video, decoded from yt-dlp's `--dump-json` output.
 /// Only the fields the app needs are declared; the decoder ignores the rest.
 struct VideoInfo: Codable {
-    /// The video's title.
     let title: String
-    /// URL of the video's thumbnail image, if one is available.
     let thumbnail: String?
-    /// Length of the video in seconds, if known (live streams may have none).
+    /// Length in seconds, if known (live streams may have none).
     let duration: Double?
 }
 
@@ -41,198 +52,59 @@ struct VideoInfo: Codable {
 /// All public methods return immediately and run the tool asynchronously,
 /// publishing results back on the main actor.
 @Observable
-class YtDlpModel {
-    /// True while a version check or info fetch is in flight.
+final class YtDlpModel {
+
+    // MARK: Observable state
+
+    /// True while a version check or info fetch is in flight (see `isDownloading` for downloads).
     var isLoading = false
-    /// Raw stdout text from the most recent simple command (e.g. `--version`).
+    /// Raw stdout from the most recent simple command (e.g. `--version`).
     var output: String = ""
-    /// Human-readable description of the last failure, or nil if none.
     var errorMessage: String?
-    /// Metadata for the most recently fetched video, or nil if none.
     var videoInfo: VideoInfo?
-    /// Download completion in the range 0.0...1.0, driven by yt-dlp's progress lines.
+    /// Download completion in 0.0...1.0, driven by yt-dlp's progress lines.
     var downloadProgress: Double = 0.0
-    /// True while a download is in progress.
     var isDownloading = false
     var downloadPhase: DownloadPhase = .idle
+    /// Where the last download landed, parsed from yt-dlp's output.
     var lastDownloadedFile: URL?
     var isBusy: Bool {
         isLoading || isDownloading
     }
-    
+
+    // MARK: Private state
+
+    /// Number of "Destination:" lines seen this download; the first stream
+    /// is the video track, any later ones are audio.
     private var destinationCount = 0
     private let dependencyManager: DependencyManager
-    
+
+    private nonisolated var downloadsDirectory: URL {
+        FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first!
+    }
+
     init(dependencyManager: DependencyManager) {
         self.dependencyManager = dependencyManager
     }
 
-    /// Runs the bundled yt-dlp binary with the given arguments and returns
-    /// everything it wrote to stdout once the process exits.
-    ///
-    /// The process runs on a detached task so the blocking reads and
-    /// `waitUntilExit()` never touch the main thread.
-    private func run(args: [String]) async throws -> String {
-        // The binary is shipped inside the app bundle as a plain resource.
-        guard let toolURL = Bundle.main.url(forResource: "yt-dlp_macos", withExtension: nil) else {
-            throw NSError(domain: "YtDlpModel", code: 1, userInfo: [NSLocalizedDescriptionKey: "Binary not found"])
-        }
-        
-        return try await Task.detached {
-            let process = Process()
-            process.executableURL = toolURL
-            process.arguments = args
-            
-            // Capture stdout and stderr separately so error text doesn't
-            // pollute the parsed output.
-            let outputPipe = Pipe()
-            let errorPipe = Pipe()
-            process.standardOutput = outputPipe
-            process.standardError = errorPipe
-            
-            try process.run()
-            
-            // Read both pipes to completion before waiting on the process;
-            // draining the pipes prevents the child from blocking on a full buffer.
-            let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
-            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
-            
-            // Surface stderr in the console for debugging, but don't treat it
-            // as a failure — yt-dlp writes warnings there too.
-            if let errorText = String(data: errorData, encoding: .utf8), !errorText.isEmpty {
-                print("yt-dlp stderr: \(errorText)")
-            }
-            
-            return String(data: outputData, encoding: .utf8) ?? ""
-        }.value
-    }
-    
-    /// Runs yt-dlp with the given arguments, streaming its stdout line by line
-    /// and updating `downloadProgress` whenever a percentage appears.
-    ///
-    /// Used for downloads, where we care about live progress rather than the
-    /// final output text.
-    private func runWithProgress(args: [String]) async throws {
-        guard let toolURL = Bundle.main.url(forResource: "yt-dlp_macos", withExtension: nil) else {
-            throw NSError(domain: "YtDlpModel", code: 1, userInfo: [NSLocalizedDescriptionKey: "Binary not found"])
-        }
+    // MARK: Actions
 
-        try await Task.detached {
-            let process = Process()
-            process.executableURL = toolURL
-            process.arguments = args
-
-            let outputPipe = Pipe()
-            let errorPipe = Pipe()
-            process.standardOutput = outputPipe
-            process.standardError = errorPipe
-
-            let outHandle = outputPipe.fileHandleForReading
-            let errHandle = errorPipe.fileHandleForReading
-            
-            // Read output incrementally as it arrives instead of waiting for
-            // the process to finish, so progress can update in real time.
-            outHandle.readabilityHandler = { fileHandle in
-                let data = fileHandle.availableData
-                guard !data.isEmpty, let line = String(data: data, encoding: .utf8) else { return }
-
-                // Detect a new stream starting (Destination line)
-                if line.contains("[download] Destination:") {
-                    Task { @MainActor in
-                        self.destinationCount += 1
-                        self.downloadPhase = self.destinationCount == 1 ? .downloadingVideo : .downloadingAudio
-                        self.downloadProgress = 0.0
-                    }
-                }
-
-                // Detect the merge phase
-                if line.contains("[Merger]") {
-                    Task { @MainActor in
-                        self.downloadPhase = .merging
-                    }
-                }
-
-                if let percent = Self.parseProgress(from: line) {
-                    Task { @MainActor in
-                        self.downloadProgress = percent
-                    }
-                }
-
-                if let dest = Self.parseDestination(from: line) {
-                    Task { @MainActor in
-                        self.lastDownloadedFile = URL(fileURLWithPath: dest)
-                    }
-                }
-            }
-            
-            errHandle.readabilityHandler = { fileHandle in
-                let data = fileHandle.availableData
-                guard !data.isEmpty, let line = String(data: data, encoding: .utf8) else { return }
-                print("yt-dlp stderr: \(line)")
-            }
-
-            try process.run()
-            process.waitUntilExit()
-            // Clear the handler so the file handle stops calling into us
-            // after the process has exited.
-            outHandle.readabilityHandler = nil
-            errHandle.readabilityHandler = nil
-        }.value
-    }
-
-    /// Extracts a download percentage from a line of yt-dlp output
-    /// (e.g. "[download]  42.5% of ...") and returns it as a fraction
-    /// in 0.0...1.0, or nil if the line contains no percentage.
-    private nonisolated static func parseProgress(from line: String) -> Double? {
-        // Match a decimal number immediately followed by a percent sign.
-        guard let range = line.range(of: #"(\d+\.\d+)%"#, options: .regularExpression) else {
-            return nil
-        }
-        let match = line[range].dropLast() // remove "%"
-        return Double(match).map { $0 / 100.0 }
-    }
-    
-    private nonisolated static func parseDestination(from line: String) -> String? {
-        if let range = line.range(of: #"\[download\] Destination: (.+)"#, options: .regularExpression) {
-            return String(line[range].replacingOccurrences(of: "[download] Destination: ", with: ""))
-        }
-        if let range = line.range(of: #"\[Merger\] Merging formats into "(.+)""#, options: .regularExpression) {
-            let match = String(line[range])
-            return match.replacingOccurrences(of: "[Merger] Merging formats into \"", with: "")
-                        .replacingOccurrences(of: "\"", with: "")
-        }
-        return nil
-    }
-    
-    /// The current user's Downloads folder, where completed videos are saved.
-    private var downloadsDirectory: URL {
-        FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first!
-    }
-    
     /// Asks yt-dlp for its version string and publishes it to `output`.
     /// Also serves as a quick sanity check that the bundled binary runs.
     func runVersion() {
         isLoading = true
         errorMessage = nil
-        
+
         Task {
             do {
-                let result = try await run(args: ["--version"])
-                await MainActor.run {
-                    self.output = result
-                    self.isLoading = false
-                }
-                
+                output = try await run(args: ["--version"])
             } catch {
-                await MainActor.run {
-                    self.errorMessage = "\(error)"
-                    self.isLoading = false
-                }
+                errorMessage = error.localizedDescription
             }
+            isLoading = false
         }
     }
-    
+
     /// Fetches metadata for the video at `urlString` (without downloading it)
     /// and publishes the decoded result to `videoInfo`.
     func fetchInfo(for urlString: String) {
@@ -245,24 +117,16 @@ class YtDlpModel {
                 // --dump-json prints the video's metadata as a single JSON
                 // object on stdout instead of downloading anything.
                 let result = try await run(args: ["--dump-json", urlString])
-                let data = Data(result.utf8)
-                let info = try JSONDecoder().decode(VideoInfo.self, from: data)
-
-                await MainActor.run {
-                    self.videoInfo = info
-                    self.isLoading = false
-                }
+                videoInfo = try JSONDecoder().decode(VideoInfo.self, from: Data(result.utf8))
             } catch {
-                await MainActor.run {
-                    self.errorMessage = "\(error)"
-                    self.isLoading = false
-                }
+                errorMessage = error.localizedDescription
             }
+            isLoading = false
         }
     }
-    
+
     /// Downloads the video at `urlString` into the user's Downloads folder,
-    /// updating `downloadProgress` as it goes.
+    /// updating `downloadProgress` and `downloadPhase` as it goes.
     func download(urlString: String) {
         isDownloading = true
         downloadProgress = 0.0
@@ -278,17 +142,154 @@ class YtDlpModel {
                     "-o", "\(downloadsDirectory.path)/%(title)s.%(ext)s",
                     urlString
                 ])
-                await MainActor.run {
-                    self.isDownloading = false
-                    self.downloadProgress = 1.0
-                    self.downloadPhase = .idle
-                }
+                downloadProgress = 1.0
             } catch {
-                await MainActor.run {
-                    self.errorMessage = "\(error)"
-                    self.isDownloading = false
-                }
+                errorMessage = error.localizedDescription
             }
+            isDownloading = false
+            downloadPhase = .idle
         }
+    }
+
+    // MARK: Running yt-dlp
+
+    /// Locates the yt-dlp binary, which ships in the app bundle as a plain resource.
+    private nonisolated func locateBinary() throws -> URL {
+        guard let url = Bundle.main.url(forResource: "yt-dlp_macos", withExtension: nil) else {
+            throw YtDlpError.binaryNotFound
+        }
+        return url
+    }
+
+    /// Runs yt-dlp and returns everything it wrote to stdout once it exits.
+    /// Runs off the main actor: the pipe reads and `waitUntilExit()` block.
+    @concurrent
+    private func run(args: [String]) async throws -> String {
+        let process = Process()
+        process.executableURL = try locateBinary()
+        process.arguments = args
+
+        // Capture stdout and stderr separately so error text doesn't
+        // pollute the parsed output.
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
+
+        try process.run()
+
+        // Drain both pipes before waiting on the process; a child that
+        // fills an unread pipe would block and never exit.
+        let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
+        let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+
+        // Log stderr but don't treat it as failure by itself — yt-dlp
+        // writes warnings there too.
+        let stderrText = String(data: errorData, encoding: .utf8) ?? ""
+        if !stderrText.isEmpty {
+            print("yt-dlp stderr: \(stderrText)")
+        }
+
+        guard process.terminationStatus == 0 else {
+            let stderrLines = stderrText.split(whereSeparator: \.isNewline).map(String.init)
+            throw YtDlpError.processFailed(
+                Self.failureMessage(stderrLines: stderrLines, status: process.terminationStatus)
+            )
+        }
+
+        return String(data: outputData, encoding: .utf8) ?? ""
+    }
+
+    /// Runs yt-dlp, parsing its stdout line by line as it arrives so progress
+    /// updates live. Throws if the process exits non-zero.
+    @concurrent
+    private func runWithProgress(args: [String]) async throws {
+        let process = Process()
+        process.executableURL = try locateBinary()
+        process.arguments = args
+
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
+
+        try process.run()
+
+        // Drain stderr concurrently with stdout so the child can't block
+        // on a full pipe, keeping the text to report if yt-dlp fails.
+        async let stderrLines: [String] = {
+            var lines: [String] = []
+            for try await line in errorPipe.fileHandleForReading.bytes.lines {
+                print("yt-dlp stderr: \(line)")
+                lines.append(line)
+            }
+            return lines
+        }()
+
+        for try await line in outputPipe.fileHandleForReading.bytes.lines {
+            await processOutputLine(line)
+        }
+
+        let stderrOutput = (try? await stderrLines) ?? []
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0 else {
+            throw YtDlpError.processFailed(
+                Self.failureMessage(stderrLines: stderrOutput, status: process.terminationStatus)
+            )
+        }
+    }
+
+    /// Builds a user-facing failure message, preferring yt-dlp's "ERROR:"
+    /// lines on stderr over a bare exit code.
+    private nonisolated static func failureMessage(stderrLines: [String], status: Int32) -> String {
+        stderrLines.last(where: { $0.contains("ERROR") })
+            ?? stderrLines.last
+            ?? "yt-dlp exited with code \(status)"
+    }
+
+    // MARK: Output parsing
+
+    /// Interprets one complete line of yt-dlp stdout and updates observable state.
+    private func processOutputLine(_ line: String) {
+        // Each stream yt-dlp downloads starts with its own Destination line.
+        if line.contains("[download] Destination:") {
+            destinationCount += 1
+            downloadPhase = destinationCount == 1 ? .downloadingVideo : .downloadingAudio
+            downloadProgress = 0.0
+        }
+
+        if line.contains("[Merger]") {
+            downloadPhase = .merging
+        }
+
+        if let percent = Self.parseProgress(from: line) {
+            downloadProgress = percent
+        }
+
+        if let dest = Self.parseDestination(from: line) {
+            lastDownloadedFile = URL(fileURLWithPath: dest)
+        }
+    }
+
+    /// Extracts a download percentage from a line of yt-dlp output
+    /// (e.g. "[download]  42.5% of ...") and returns it as a fraction
+    /// in 0.0...1.0, or nil if the line contains no percentage.
+    private nonisolated static func parseProgress(from line: String) -> Double? {
+        guard let match = line.firstMatch(of: /(\d+\.\d+)%/) else { return nil }
+        return Double(match.1).map { $0 / 100.0 }
+    }
+
+    /// Extracts the output file path from a "Destination:" or Merger line,
+    /// or nil for any other line.
+    private nonisolated static func parseDestination(from line: String) -> String? {
+        if let match = line.firstMatch(of: /\[download\] Destination: (.+)/) {
+            return String(match.1)
+        }
+        if let match = line.firstMatch(of: /\[Merger\] Merging formats into "(.+)"/) {
+            return String(match.1)
+        }
+        return nil
     }
 }

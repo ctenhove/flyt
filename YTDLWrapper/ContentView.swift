@@ -7,8 +7,8 @@
 
 import SwiftUI
 
-/// The app's main window: a URL field plus buttons for checking the yt-dlp
-/// version and fetching video metadata, with results shown below.
+/// The app's main window: paste a video URL, fetch its metadata, and download
+/// it to the Downloads folder with live progress.
 struct ContentView: View {
     
     @State private var urlString: String = ""
@@ -57,7 +57,8 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
 
                 if model.downloadPhase == .merging {
-                    ProgressView()   // indeterminate spinner — merge has no percentage
+                    // Merging reports no percentage, so fall back to a spinner.
+                    ProgressView()
                 } else {
                     ProgressView(value: model.downloadProgress, total: 1.0)
                     Text("\(Int(model.downloadProgress * 100))%")

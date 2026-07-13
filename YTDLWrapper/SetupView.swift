@@ -7,8 +7,11 @@
 
 import SwiftUI
 
+/// First-launch screen shown while the ffmpeg dependency is checked and downloaded.
 struct SetupView: View {
     let state: DependencyManager.SetupState
+    /// Download completion in 0...1; nil shows an indeterminate spinner.
+    let downloadProgress: Double?
     let onRetry: () -> Void
 
     var body: some View {
@@ -19,8 +22,14 @@ struct SetupView: View {
                 Text("Checking dependencies…")
 
             case .downloading:
-                ProgressView()
-                Text("Downloading ffmpeg…")
+                if let downloadProgress {
+                    ProgressView(value: downloadProgress)
+                        .frame(maxWidth: 250)
+                    Text("Downloading ffmpeg… \(Int(downloadProgress * 100))%")
+                } else {
+                    ProgressView()
+                    Text("Downloading ffmpeg…")
+                }
                 Text("This happens once, on first launch.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
