@@ -7,13 +7,19 @@
 
 import SwiftUI
 
-/// The app's main window: a URL field plus buttons for checking the yt-dlp
-/// version and fetching video metadata, with results shown below.
+/// The app's main window: paste a video URL, fetch its metadata, and download
+/// it to the Downloads folder with live progress.
 struct ContentView: View {
-    /// Model that runs the yt-dlp binary; observed so results update the UI.
-    @State private var model = YtDlpModel()
-    /// The video URL typed or pasted by the user.
+    
     @State private var urlString: String = ""
+    
+    let dependencyManager: DependencyManager
+    @State private var model: YtDlpModel
+    
+    init(dependencyManager: DependencyManager) {
+        self.dependencyManager = dependencyManager
+        _model = State(wrappedValue: YtDlpModel(dependencyManager: dependencyManager))
+    }
     
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -46,9 +52,18 @@ struct ContentView: View {
             }
 
             if model.isDownloading {
-                ProgressView(value: model.downloadProgress, total: 1.0)
-                Text("\(Int(model.downloadProgress * 100))%")
+                Text(model.downloadPhase.label)
                     .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if model.downloadPhase == .merging {
+                    // Merging reports no percentage, so fall back to a spinner.
+                    ProgressView()
+                } else {
+                    ProgressView(value: model.downloadProgress, total: 1.0)
+                    Text("\(Int(model.downloadProgress * 100))%")
+                        .font(.caption)
+                }
             }
 
             if let file = model.lastDownloadedFile, !model.isDownloading {
@@ -72,8 +87,4 @@ struct ContentView: View {
         .padding()
         .frame(width: 480, height: 340)
     }
-}
-
-#Preview {
-    ContentView()
 }
