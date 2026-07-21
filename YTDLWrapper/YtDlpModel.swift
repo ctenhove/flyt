@@ -178,27 +178,32 @@ final class YtDlpModel {
 
         try process.run()
 
-        // Drain both pipes before waiting on the process; a child that
-        // fills an unread pipe would block and never exit.
-        let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
-        let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
+        // Drain stderr concurrently with stdout so the child can't block
+        // on a full pipe buffer, keeping the text to report if yt-dlp fails.
+        async let stderrLines: [String] = {
+            var lines: [String] = []
+            for try await line in errorPipe.fileHandleForReading.bytes.lines {
+                print("yt-dlp stderr: \(line)")
+                lines.append(line)
+            }
+            return lines
+        }()
 
-        // Log stderr but don't treat it as failure by itself — yt-dlp
-        // writes warnings there too.
-        let stderrText = String(data: errorData, encoding: .utf8) ?? ""
-        if !stderrText.isEmpty {
-            print("yt-dlp stderr: \(stderrText)")
+        var outputLines: [String] = []
+        for try await line in outputPipe.fileHandleForReading.bytes.lines {
+            outputLines.append(line)
         }
 
+        let stderrOutput = (try? await stderrLines) ?? []
+        process.waitUntilExit()
+
         guard process.terminationStatus == 0 else {
-            let stderrLines = stderrText.split(whereSeparator: \.isNewline).map(String.init)
             throw YtDlpError.processFailed(
-                Self.failureMessage(stderrLines: stderrLines, status: process.terminationStatus)
+                Self.failureMessage(stderrLines: stderrOutput, status: process.terminationStatus)
             )
         }
 
-        return String(data: outputData, encoding: .utf8) ?? ""
+        return outputLines.joined(separator: "\n")
     }
 
     /// Runs yt-dlp, parsing its stdout line by line as it arrives so progress
