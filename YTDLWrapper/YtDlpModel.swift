@@ -225,24 +225,57 @@ final class YtDlpModel {
         // on a full pipe, keeping the text to report if yt-dlp fails.
         async let stderrLines: [String] = {
             var lines: [String] = []
-            for try await line in errorPipe.fileHandleForReading.bytes.lines {
+            for await line in Self.lines(from: errorPipe.fileHandleForReading) {
                 print("yt-dlp stderr: \(line)")
                 lines.append(line)
             }
             return lines
         }()
 
-        for try await line in outputPipe.fileHandleForReading.bytes.lines {
+        for await line in Self.lines(from: outputPipe.fileHandleForReading) {
             await processOutputLine(line)
         }
 
-        let stderrOutput = (try? await stderrLines) ?? []
+        let stderrOutput = await stderrLines
         process.waitUntilExit()
 
         guard process.terminationStatus == 0 else {
             throw YtDlpError.processFailed(
                 Self.failureMessage(stderrLines: stderrOutput, status: process.terminationStatus)
             )
+        }
+    }
+
+    /// Streams a pipe's contents as lines as they're written, instead of
+    /// buffering until the pipe closes. `FileHandle.bytes.lines` only
+    /// surfaces data once the pipe reaches EOF, which held progress updates
+    /// back until the process exited; `readabilityHandler` fires as soon as
+    /// data is available.
+    private nonisolated static func lines(from handle: FileHandle) -> AsyncStream<String> {
+        AsyncStream { continuation in
+            var buffer = Data()
+            handle.readabilityHandler = { fileHandle in
+                let data = fileHandle.availableData
+                guard !data.isEmpty else {
+                    if let line = String(data: buffer, encoding: .utf8), !line.isEmpty {
+                        continuation.yield(line)
+                    }
+                    fileHandle.readabilityHandler = nil
+                    continuation.finish()
+                    return
+                }
+                buffer.append(data)
+                while let newlineRange = buffer.range(of: Data([0x0A])) {
+                    let lineData = buffer.subdata(in: buffer.startIndex..<newlineRange.lowerBound)
+                    buffer.removeSubrange(buffer.startIndex..<newlineRange.upperBound)
+                    if let line = String(data: lineData, encoding: .utf8) {
+                        continuation.yield(line)
+                    }
+                }
+            }
+            continuation.onTermination = { _ in
+                handle.readabilityHandler = nil
+            }
         }
     }
 
