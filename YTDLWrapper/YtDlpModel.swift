@@ -44,6 +44,68 @@ struct VideoInfo: Codable {
     let thumbnail: String?
     /// Length in seconds, if known (live streams may have none).
     let duration: Double?
+    /// Every format yt-dlp offers for this video, worst to best as yt-dlp orders them.
+    let formats: [VideoFormat]
+}
+
+/// One downloadable format of a video, decoded from an entry in yt-dlp's
+/// `--dump-json` "formats" array. Only the fields the picker UI needs are
+/// declared; the decoder ignores the rest.
+struct VideoFormat: Codable, Identifiable, Hashable {
+    let formatId: String
+    let ext: String
+    let resolution: String?
+    let height: Int?
+    let vcodec: String?
+    let acodec: String?
+    let formatNote: String?
+    let filesize: Int64?
+    let filesizeApprox: Int64?
+
+    var id: String { formatId }
+
+    enum CodingKeys: String, CodingKey {
+        case formatId = "format_id"
+        case ext
+        case resolution
+        case height
+        case vcodec
+        case acodec
+        case formatNote = "format_note"
+        case filesize
+        case filesizeApprox = "filesize_approx"
+    }
+
+    /// A short human-readable summary for a format picker, e.g.
+    /// "1080p · mp4 · 42.3 MB" or "audio only · m4a · 3.1 MB".
+    var label: String {
+        var components: [String] = []
+
+        if vcodec == "none" {
+            components.append("audio only")
+        } else if let resolution {
+            components.append(resolution)
+        } else if let height {
+            components.append("\(height)p")
+        }
+
+        components.append(ext)
+
+        if let formatNote, !formatNote.isEmpty {
+            components.append(formatNote)
+        }
+
+        if let size = Self.formattedFileSize(filesize ?? filesizeApprox) {
+            components.append(size)
+        }
+
+        return components.joined(separator: " · ")
+    }
+
+    private static func formattedFileSize(_ bytes: Int64?) -> String? {
+        guard let bytes else { return nil }
+        return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
 }
 
 /// Wraps the bundled `yt-dlp_macos` command-line binary and exposes its
@@ -126,22 +188,29 @@ final class YtDlpModel {
     }
 
     /// Downloads the video at `urlString` into the user's Downloads folder,
-    /// updating `downloadProgress` and `downloadPhase` as it goes.
-    func download(urlString: String) {
+    /// updating `downloadProgress` and `downloadPhase` as it goes. Pass the
+    /// `format_id` of a `VideoFormat` from `videoInfo.formats` to download
+    /// that specific format; omit it to let yt-dlp pick its default.
+    func download(urlString: String, formatId: String? = nil) {
         isDownloading = true
         downloadProgress = 0.0
         errorMessage = nil
         downloadPhase = .downloadingVideo
         destinationCount = 0
 
+        var args = [
+            "--newline",
+            "--ffmpeg-location", dependencyManager.ffmpegURL.path,
+            "-o", "\(downloadsDirectory.path)/%(title)s.%(ext)s"
+        ]
+        if let formatId {
+            args += ["-f", formatId]
+        }
+        args.append(urlString)
+
         Task {
             do {
-                try await runWithProgress(args: [
-                    "--newline",
-                    "--ffmpeg-location", dependencyManager.ffmpegURL.path,
-                    "-o", "\(downloadsDirectory.path)/%(title)s.%(ext)s",
-                    urlString
-                ])
+                try await runWithProgress(args: args)
                 downloadProgress = 1.0
             } catch {
                 errorMessage = error.localizedDescription

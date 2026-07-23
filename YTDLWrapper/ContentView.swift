@@ -12,7 +12,8 @@ import SwiftUI
 struct ContentView: View {
     
     @State private var urlString: String = ""
-    
+    @State private var selectedFormatID: String?
+
     let dependencyManager: DependencyManager
     @State private var model: YtDlpModel
     
@@ -32,6 +33,7 @@ struct ContentView: View {
                     .textFieldStyle(.roundedBorder)
 
                 Button("Fetch Info") {
+                    selectedFormatID = nil
                     model.fetchInfo(for: urlString)
                 }
                 .disabled(model.isBusy || urlString.isEmpty)
@@ -40,12 +42,25 @@ struct ContentView: View {
             if let info = model.videoInfo {
                 Text(info.title)
                     .font(.headline)
+
+                if !info.formats.isEmpty {
+                    Picker("Format", selection: $selectedFormatID) {
+                        ForEach(info.formats.reversed()) { format in
+                            Text(format.label).tag(Optional(format.id))
+                        }
+                    }
+                    .onChange(of: info.formats, initial: true) {
+                        if selectedFormatID == nil {
+                            selectedFormatID = info.formats.last?.id
+                        }
+                    }
+                }
             }
 
             Button("Download") {
-                model.download(urlString: urlString)
+                model.download(urlString: urlString, formatId: selectedFormatID)
             }
-            .disabled(model.isBusy || urlString.isEmpty)
+            .disabled(model.isBusy || urlString.isEmpty || model.videoInfo == nil)
 
             if model.isLoading {
                 ProgressView()
