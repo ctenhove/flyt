@@ -11,17 +11,35 @@ import SwiftUI
 /// it to the Downloads folder with live progress.
 struct ContentView: View {
     
+    /// Sentinel selection meaning "don't download this track".
+    private static let skipOption = "none"
+
     @State private var urlString: String = ""
-    @State private var selectedFormatID: String?
+    @State private var selectedVideoFormatID: String = ContentView.skipOption
+    @State private var selectedAudioFormatID: String = ContentView.skipOption
 
     let dependencyManager: DependencyManager
     @State private var model: YtDlpModel
-    
+
     init(dependencyManager: DependencyManager) {
         self.dependencyManager = dependencyManager
         _model = State(wrappedValue: YtDlpModel(dependencyManager: dependencyManager))
     }
-    
+
+    /// Video-capable formats, best quality first.
+    private var videoFormats: [VideoFormat] {
+        (model.videoInfo?.formats ?? [])
+            .filter { $0.hasVideo }
+            .sorted { $0.qualityRank > $1.qualityRank }
+    }
+
+    /// Audio-only formats, best quality first.
+    private var audioFormats: [VideoFormat] {
+        (model.videoInfo?.formats ?? [])
+            .filter { $0.isAudioOnly }
+            .sorted { $0.qualityRank > $1.qualityRank }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("yt-dlp Downloader")
@@ -33,7 +51,8 @@ struct ContentView: View {
                     .textFieldStyle(.roundedBorder)
 
                 Button("Fetch Info") {
-                    selectedFormatID = nil
+                    selectedVideoFormatID = Self.skipOption
+                    selectedAudioFormatID = Self.skipOption
                     model.fetchInfo(for: urlString)
                 }
                 .disabled(model.isBusy || urlString.isEmpty)
@@ -42,25 +61,45 @@ struct ContentView: View {
             if let info = model.videoInfo {
                 Text(info.title)
                     .font(.headline)
-
-                if !info.formats.isEmpty {
-                    Picker("Format", selection: $selectedFormatID) {
-                        ForEach(info.formats.reversed()) { format in
-                            Text(format.label).tag(Optional(format.id))
+                    .onChange(of: info.formats, initial: true) {
+                        if selectedVideoFormatID == Self.skipOption {
+                            selectedVideoFormatID = videoFormats.first?.id ?? Self.skipOption
+                        }
+                        if selectedAudioFormatID == Self.skipOption {
+                            selectedAudioFormatID = audioFormats.first?.id ?? Self.skipOption
                         }
                     }
-                    .onChange(of: info.formats, initial: true) {
-                        if selectedFormatID == nil {
-                            selectedFormatID = info.formats.last?.id
+
+                if !videoFormats.isEmpty {
+                    Picker("Video", selection: $selectedVideoFormatID) {
+                        Text("None").tag(Self.skipOption)
+                        ForEach(videoFormats) { format in
+                            Text(format.label).tag(format.id)
+                        }
+                    }
+                }
+
+                if !audioFormats.isEmpty {
+                    Picker("Audio", selection: $selectedAudioFormatID) {
+                        Text("None").tag(Self.skipOption)
+                        ForEach(audioFormats) { format in
+                            Text(format.label).tag(format.id)
                         }
                     }
                 }
             }
 
             Button("Download") {
-                model.download(urlString: urlString, formatId: selectedFormatID)
+                model.download(
+                    urlString: urlString,
+                    videoFormatId: selectedVideoFormatID == Self.skipOption ? nil : selectedVideoFormatID,
+                    audioFormatId: selectedAudioFormatID == Self.skipOption ? nil : selectedAudioFormatID
+                )
             }
-            .disabled(model.isBusy || urlString.isEmpty || model.videoInfo == nil)
+            .disabled(
+                model.isBusy || urlString.isEmpty || model.videoInfo == nil
+                    || (selectedVideoFormatID == Self.skipOption && selectedAudioFormatID == Self.skipOption)
+            )
 
             if model.isLoading {
                 ProgressView()

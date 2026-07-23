@@ -51,14 +51,23 @@ struct VideoInfo: Codable {
 /// One downloadable format of a video, decoded from an entry in yt-dlp's
 /// `--dump-json` "formats" array. Only the fields the picker UI needs are
 /// declared; the decoder ignores the rest.
+///
+/// Sites like YouTube publish many formats per video: separate DASH streams
+/// for each video codec (avc1/h264, vp9, av1), separate 30fps/60fps variants
+/// at the same resolution, and sometimes a legacy "progressive" stream that
+/// already has audio muxed in alongside a video-only stream at the same
+/// resolution — which is why two entries can share a resolution/extension
+/// but differ in size.
 struct VideoFormat: Codable, Identifiable, Hashable {
     let formatId: String
     let ext: String
     let resolution: String?
     let height: Int?
+    let fps: Double?
     let vcodec: String?
     let acodec: String?
-    let formatNote: String?
+    let abr: Double?
+    let tbr: Double?
     let filesize: Int64?
     let filesizeApprox: Int64?
 
@@ -69,30 +78,68 @@ struct VideoFormat: Codable, Identifiable, Hashable {
         case ext
         case resolution
         case height
+        case fps
         case vcodec
         case acodec
-        case formatNote = "format_note"
+        case abr
+        case tbr
         case filesize
         case filesizeApprox = "filesize_approx"
     }
 
+    /// True if this format carries a video track (yt-dlp uses vcodec "none" for audio-only formats).
+    var hasVideo: Bool {
+        guard let vcodec else { return false }
+        return vcodec != "none"
+    }
+
+    /// True if this format is audio-only.
+    var isAudioOnly: Bool {
+        !hasVideo && acodec != nil && acodec != "none"
+    }
+
+    /// True if this format has no separate audio track (common for high-res DASH video streams).
+    var isVideoOnly: Bool {
+        hasVideo && (acodec == nil || acodec == "none")
+    }
+
+    /// A rough quality score for sorting/defaulting a picker to "best first".
+    var qualityRank: Double {
+        if hasVideo {
+            return Double((height ?? 0) * 1000) + (fps ?? 0)
+        }
+        return abr ?? tbr ?? 0
+    }
+
     /// A short human-readable summary for a format picker, e.g.
-    /// "1080p · mp4 · 42.3 MB" or "audio only · m4a · 3.1 MB".
+    /// "1080p60 · mp4 · h264 · video only · 85.4 MB" or "128 kbps · m4a · aac · 3.1 MB".
     var label: String {
         var components: [String] = []
 
-        if vcodec == "none" {
-            components.append("audio only")
-        } else if let resolution {
-            components.append(resolution)
-        } else if let height {
-            components.append("\(height)p")
-        }
-
-        components.append(ext)
-
-        if let formatNote, !formatNote.isEmpty {
-            components.append(formatNote)
+        if isAudioOnly {
+            if let abr {
+                components.append("\(Int(abr)) kbps")
+            }
+            components.append(ext)
+            if let codec = Self.shortCodec(acodec) {
+                components.append(codec)
+            }
+        } else {
+            if let resolution {
+                components.append(resolution)
+            } else if let height {
+                components.append("\(height)p")
+            }
+            if let fps, fps > 30 {
+                components.append("\(Int(fps))fps")
+            }
+            components.append(ext)
+            if let codec = Self.shortCodec(vcodec) {
+                components.append(codec)
+            }
+            if isVideoOnly {
+                components.append("video only")
+            }
         }
 
         if let size = Self.formattedFileSize(filesize ?? filesizeApprox) {
@@ -100,6 +147,20 @@ struct VideoFormat: Codable, Identifiable, Hashable {
         }
 
         return components.joined(separator: " · ")
+    }
+
+    /// Maps a raw yt-dlp codec string (e.g. "avc1.640028", "vp09.00.40.08")
+    /// to a short recognizable name.
+    private static func shortCodec(_ raw: String?) -> String? {
+        guard let raw, raw != "none" else { return nil }
+        let base = raw.split(separator: ".").first.map(String.init) ?? raw
+        switch base {
+        case "avc1": return "h264"
+        case "vp9", "vp09": return "vp9"
+        case "av01": return "av1"
+        case "mp4a": return "aac"
+        default: return base
+        }
     }
 
     private static func formattedFileSize(_ bytes: Int64?) -> String? {
@@ -137,8 +198,12 @@ final class YtDlpModel {
     // MARK: Private state
 
     /// Number of "Destination:" lines seen this download; the first stream
-    /// is the video track, any later ones are audio.
+    /// is the video track, any later ones are audio — unless no video track
+    /// was requested, see `expectsVideoTrack`.
     private var destinationCount = 0
+    /// Whether the current download includes a video track, so the first
+    /// "Destination:" line is labeled correctly for audio-only downloads.
+    private var expectsVideoTrack = true
     private let dependencyManager: DependencyManager
 
     private nonisolated var downloadsDirectory: URL {
@@ -189,13 +254,16 @@ final class YtDlpModel {
 
     /// Downloads the video at `urlString` into the user's Downloads folder,
     /// updating `downloadProgress` and `downloadPhase` as it goes. Pass the
-    /// `format_id` of a `VideoFormat` from `videoInfo.formats` to download
-    /// that specific format; omit it to let yt-dlp pick its default.
-    func download(urlString: String, formatId: String? = nil) {
+    /// `format_id`s of `VideoFormat`s from `videoInfo.formats` to select
+    /// specific video and/or audio streams — yt-dlp merges them if both are
+    /// given. Passing `nil` for one track downloads only the other; passing
+    /// `nil` for both lets yt-dlp pick its own default.
+    func download(urlString: String, videoFormatId: String?, audioFormatId: String?) {
         isDownloading = true
         downloadProgress = 0.0
         errorMessage = nil
-        downloadPhase = .downloadingVideo
+        expectsVideoTrack = videoFormatId != nil
+        downloadPhase = expectsVideoTrack ? .downloadingVideo : .downloadingAudio
         destinationCount = 0
 
         var args = [
@@ -203,8 +271,9 @@ final class YtDlpModel {
             "--ffmpeg-location", dependencyManager.ffmpegURL.path,
             "-o", "\(downloadsDirectory.path)/%(title)s.%(ext)s"
         ]
-        if let formatId {
-            args += ["-f", formatId]
+        let formatSelector = [videoFormatId, audioFormatId].compactMap { $0 }.joined(separator: "+")
+        if !formatSelector.isEmpty {
+            args += ["-f", formatSelector]
         }
         args.append(urlString)
 
@@ -363,7 +432,8 @@ final class YtDlpModel {
         // Each stream yt-dlp downloads starts with its own Destination line.
         if line.contains("[download] Destination:") {
             destinationCount += 1
-            downloadPhase = destinationCount == 1 ? .downloadingVideo : .downloadingAudio
+            let isVideoTrack = destinationCount == 1 && expectsVideoTrack
+            downloadPhase = isVideoTrack ? .downloadingVideo : .downloadingAudio
             downloadProgress = 0.0
         }
 
