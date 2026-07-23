@@ -37,6 +37,18 @@ enum YtDlpError: LocalizedError {
     }
 }
 
+/// Container to mux the final output into, passed to yt-dlp's
+/// `--merge-output-format`. Only takes effect when yt-dlp actually needs to
+/// merge separate video/audio streams; it's ignored otherwise.
+enum OutputContainer: String, CaseIterable, Identifiable, Hashable {
+    case mp4
+    case mkv
+    case webm
+
+    var id: String { rawValue }
+    var label: String { rawValue }
+}
+
 /// Metadata about a video, decoded from yt-dlp's `--dump-json` output.
 /// Only the fields the app needs are declared; the decoder ignores the rest.
 struct VideoInfo: Codable {
@@ -257,8 +269,10 @@ final class YtDlpModel {
     /// `format_id`s of `VideoFormat`s from `videoInfo.formats` to select
     /// specific video and/or audio streams — yt-dlp merges them if both are
     /// given. Passing `nil` for one track downloads only the other; passing
-    /// `nil` for both lets yt-dlp pick its own default.
-    func download(urlString: String, videoFormatId: String?, audioFormatId: String?) {
+    /// `nil` for both lets yt-dlp pick its own default. `outputContainer`
+    /// controls the container yt-dlp merges into; it's ignored if no merge
+    /// is needed (e.g. only one track was selected).
+    func download(urlString: String, videoFormatId: String?, audioFormatId: String?, outputContainer: OutputContainer) {
         isDownloading = true
         downloadProgress = 0.0
         errorMessage = nil
@@ -269,6 +283,7 @@ final class YtDlpModel {
         var args = [
             "--newline",
             "--ffmpeg-location", dependencyManager.ffmpegURL.path,
+            "--merge-output-format", outputContainer.rawValue,
             "-o", "\(downloadsDirectory.path)/%(title)s.%(ext)s"
         ]
         let formatSelector = [videoFormatId, audioFormatId].compactMap { $0 }.joined(separator: "+")

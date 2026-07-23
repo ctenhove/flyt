@@ -17,6 +17,7 @@ struct ContentView: View {
     @State private var urlString: String = ""
     @State private var selectedVideoFormatID: String = ContentView.skipOption
     @State private var selectedAudioFormatID: String = ContentView.skipOption
+    @State private var selectedOutputContainer: OutputContainer = .mp4
 
     let dependencyManager: DependencyManager
     @State private var model: YtDlpModel
@@ -38,6 +39,12 @@ struct ContentView: View {
         (model.videoInfo?.formats ?? [])
             .filter { $0.isAudioOnly }
             .sorted { $0.qualityRank > $1.qualityRank }
+    }
+
+    /// True when both a video and an audio track are selected, meaning
+    /// yt-dlp will actually mux them — the only time the container choice matters.
+    private var willMerge: Bool {
+        selectedVideoFormatID != Self.skipOption && selectedAudioFormatID != Self.skipOption
     }
 
     var body: some View {
@@ -87,19 +94,27 @@ struct ContentView: View {
                         }
                     }
                 }
+
+                if willMerge {
+                    Picker("Output", selection: $selectedOutputContainer) {
+                        ForEach(OutputContainer.allCases) { container in
+                            Text(container.label).tag(container)
+                        }
+                    }
+                }
             }
 
-            Button("Download") {
-                model.download(
-                    urlString: urlString,
-                    videoFormatId: selectedVideoFormatID == Self.skipOption ? nil : selectedVideoFormatID,
-                    audioFormatId: selectedAudioFormatID == Self.skipOption ? nil : selectedAudioFormatID
-                )
+            if selectedVideoFormatID != Self.skipOption || selectedAudioFormatID != Self.skipOption {
+                Button("Download") {
+                    model.download(
+                        urlString: urlString,
+                        videoFormatId: selectedVideoFormatID == Self.skipOption ? nil : selectedVideoFormatID,
+                        audioFormatId: selectedAudioFormatID == Self.skipOption ? nil : selectedAudioFormatID,
+                        outputContainer: selectedOutputContainer
+                    )
+                }
+                .disabled(model.isBusy || urlString.isEmpty || model.videoInfo == nil)
             }
-            .disabled(
-                model.isBusy || urlString.isEmpty || model.videoInfo == nil
-                    || (selectedVideoFormatID == Self.skipOption && selectedAudioFormatID == Self.skipOption)
-            )
 
             if model.isLoading {
                 ProgressView()
