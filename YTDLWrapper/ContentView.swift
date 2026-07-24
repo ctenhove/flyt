@@ -42,10 +42,18 @@ struct ContentView: View {
                     .font(.headline)
             }
 
-            Button("Download") {
-                model.download(urlString: urlString)
+            HStack {
+                Button("Download") {
+                    model.download(urlString: urlString)
+                }
+                .disabled(model.isBusy || urlString.isEmpty)
+
+                if model.isBusy {
+                    Button("Cancel") {
+                        model.cancel()
+                    }
+                }
             }
-            .disabled(model.isBusy || urlString.isEmpty)
 
             if model.isLoading {
                 ProgressView()

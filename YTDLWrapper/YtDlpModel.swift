@@ -28,11 +28,13 @@ enum DownloadPhase {
 enum YtDlpError: LocalizedError {
     case binaryNotFound
     case processFailed(String)
+    case cancelled
 
     var errorDescription: String? {
         switch self {
         case .binaryNotFound: return "The bundled yt-dlp binary is missing."
         case .processFailed(let detail): return detail
+        case .cancelled: return "Cancelled."
         }
     }
 }
@@ -82,6 +84,12 @@ final class YtDlpModel {
     private var seenDestinations: Set<String> = []
     private let dependencyManager: DependencyManager
 
+    /// The yt-dlp process currently running, if any, so `cancel()` can
+    /// terminate it while `run`/`runWithProgress` are executing off the main
+    /// actor. `Process.terminate()` is safe to call from any thread, so this
+    /// is marked unsafe rather than hopping actors on every process start/stop.
+    private nonisolated(unsafe) var activeProcess: Process?
+
     private nonisolated var downloadsDirectory: URL {
         FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first!
     }
@@ -122,8 +130,16 @@ final class YtDlpModel {
                 // --no-playlist forces single-video mode: without it, a
                 // playlist URL makes yt-dlp print one JSON object per entry,
                 // which wouldn't parse as the single VideoInfo we expect.
-                let result = try await run(args: ["--dump-json", "--no-playlist", urlString])
+                // --ffmpeg-location points at the bundled binary so yt-dlp
+                // doesn't warn about a missing system ffmpeg it doesn't need.
+                let result = try await run(args: [
+                    "--dump-json", "--no-playlist",
+                    "--ffmpeg-location", dependencyManager.ffmpegURL.path,
+                    urlString
+                ])
                 videoInfo = try JSONDecoder().decode(VideoInfo.self, from: Data(result.utf8))
+            } catch YtDlpError.cancelled {
+                // User-initiated; leave the UI clean rather than showing an error.
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -155,12 +171,20 @@ final class YtDlpModel {
                     urlString
                 ])
                 downloadProgress = 1.0
+            } catch YtDlpError.cancelled {
+                // User-initiated; leave the UI clean rather than showing an error.
             } catch {
                 errorMessage = error.localizedDescription
             }
             isDownloading = false
             downloadPhase = .idle
         }
+    }
+
+    /// Cancels the in-flight fetch or download, if any, by terminating the
+    /// underlying yt-dlp process. Safe to call even if nothing is running.
+    func cancel() {
+        activeProcess?.terminate()
     }
 
     // MARK: Running yt-dlp
@@ -189,6 +213,8 @@ final class YtDlpModel {
         process.standardError = errorPipe
 
         try process.run()
+        activeProcess = process
+        defer { activeProcess = nil }
 
         // Drain stderr concurrently with stdout so the child can't block
         // on a full pipe buffer, keeping the text to report if yt-dlp fails.
@@ -210,6 +236,10 @@ final class YtDlpModel {
         process.waitUntilExit()
 
         guard process.terminationStatus == 0 else {
+            // A signal-terminated process means `cancel()` killed it.
+            if process.terminationReason == .uncaughtSignal {
+                throw YtDlpError.cancelled
+            }
             throw YtDlpError.processFailed(
                 Self.failureMessage(stderrLines: stderrOutput, status: process.terminationStatus)
             )
@@ -232,6 +262,8 @@ final class YtDlpModel {
         process.standardError = errorPipe
 
         try process.run()
+        activeProcess = process
+        defer { activeProcess = nil }
 
         // Drain stderr concurrently with stdout so the child can't block
         // on a full pipe, keeping the text to report if yt-dlp fails.
@@ -252,6 +284,10 @@ final class YtDlpModel {
         process.waitUntilExit()
 
         guard process.terminationStatus == 0 else {
+            // A signal-terminated process means `cancel()` killed it.
+            if process.terminationReason == .uncaughtSignal {
+                throw YtDlpError.cancelled
+            }
             throw YtDlpError.processFailed(
                 Self.failureMessage(stderrLines: stderrOutput, status: process.terminationStatus)
             )
