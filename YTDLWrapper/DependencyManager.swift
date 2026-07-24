@@ -122,22 +122,23 @@ final class DependencyManager {
 
     // MARK: Pinned release
 
-    /// The pinned ffmpeg release build and the SHA-256 of its zip.
+    /// The pinned ffmpeg release tag and the SHA-256 of its zip, hosted on
+    /// our own GitHub releases.
     ///
     /// Hardcoding the hash means a tampered download fails verification even
-    /// if the server itself is compromised. To update: pick a new release at
-    /// https://ffmpeg.martin-riedl.de, then update the build ID and hash for
-    /// both architectures (compute with `shasum -a 256 ffmpeg.zip`).
-    private nonisolated var pinnedRelease: (buildID: String, sha256: String) {
+    /// if the server itself is compromised. To update: publish a new release
+    /// at https://github.com/ctenhove/YTDLPWrapper-Dependencies/releases,
+    /// then update the tag and hash for both architectures
+    /// (compute with `shasum -a 256 ffmpeg-<arch>.zip`).
+    private nonisolated var pinnedRelease: (tag: String, sha256: String) {
         #if arch(arm64)
-        ("1783011502_8.1.2", "ef1aa60006c7b77ce170c1608c08d8e4ba1c30c5746f2ac986ded932d0ac2c3c")
+        ("v8.1.2", "ef1aa60006c7b77ce170c1608c08d8e4ba1c30c5746f2ac986ded932d0ac2c3c")
         #else
-        ("1783018342_8.1.2", "a52ef43883f44c219766d4b3bdde4e635b35465d0b704c01c3a0566b59775df9")
+        ("v8.1.2", "a52ef43883f44c219766d4b3bdde4e635b35465d0b704c01c3a0566b59775df9")
         #endif
     }
 
-    /// The architecture segment used in download URLs — "amd64" is the
-    /// build server's name for Intel.
+    /// The architecture segment used in the release asset's filename.
     private nonisolated var architecture: String {
         #if arch(arm64)
         return "arm64"
@@ -147,7 +148,7 @@ final class DependencyManager {
     }
 
     private nonisolated var ffmpegDownloadURL: URL {
-        URL(string: "https://ffmpeg.martin-riedl.de/download/macos/\(architecture)/\(pinnedRelease.buildID)/ffmpeg.zip")!
+        URL(string: "https://github.com/ctenhove/YTDLPWrapper-Dependencies/releases/download/\(pinnedRelease.tag)/ffmpeg-\(architecture).zip")!
     }
 
     // MARK: Installation

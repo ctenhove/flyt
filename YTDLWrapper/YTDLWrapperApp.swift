@@ -20,10 +20,7 @@ struct YTDLWrapperApp: App {
                 default:
                     SetupView(
                         state: dependencyManager.setupState,
-                        downloadProgress: dependencyManager.downloadProgress,
-                        onRetry: {
-                            Task { await dependencyManager.performSetupIfNeeded() }
-                        }
+                        downloadProgress: dependencyManager.downloadProgress
                     )
                 }
             }
