@@ -166,7 +166,7 @@ struct ContentView: View {
                 }
             }
 
-            if selectedVideoFormatID != Self.skipOption || selectedAudioFormatID != Self.skipOption {
+            if model.videoInfo != nil {
                 HStack {
                     Text(destinationFolder.lastPathComponent)
                         .font(.caption)
