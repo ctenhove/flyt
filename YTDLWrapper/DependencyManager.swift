@@ -45,6 +45,12 @@ final class DependencyManager {
     /// nil while the total size is still unknown.
     private(set) var downloadProgress: Double?
 
+    /// The in-flight setup run, if any. Guards against a second WindowGroup
+    /// scene (e.g. Cmd+N) re-entering `performSetupIfNeeded()` while
+    /// `installFFmpeg()` is still writing into `binDirectory` — without this,
+    /// two concurrent `unzip` calls could race into the same directory.
+    private var setupTask: Task<Void, Never>?
+
     // MARK: Public API
 
     /// Path of the installed ffmpeg binary; passed to yt-dlp via `--ffmpeg-location`.
@@ -57,8 +63,22 @@ final class DependencyManager {
     }
 
     /// Installs ffmpeg unless it is already present, driving `setupState`
-    /// through the stages so views can react.
+    /// through the stages so views can react. Safe to call from multiple
+    /// windows at once: if a run is already in flight, this just awaits it
+    /// instead of starting a second `installFFmpeg()`.
     func performSetupIfNeeded() async {
+        if let setupTask {
+            await setupTask.value
+            return
+        }
+
+        let task = Task { await self.runSetup() }
+        setupTask = task
+        await task.value
+        setupTask = nil
+    }
+
+    private func runSetup() async {
         setupState = .checking
 
         if isFFmpegInstalled() {
