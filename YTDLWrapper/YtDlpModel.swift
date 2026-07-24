@@ -282,8 +282,12 @@ final class YtDlpModel {
         process.waitUntilExit()
 
         guard process.terminationStatus == 0 else {
-            // A signal-terminated process means `cancel()` killed it.
-            if process.terminationReason == .uncaughtSignal {
+            // `cancel()` sends SIGTERM specifically, so only that signal means
+            // *we* killed it. Any other uncaught signal (e.g. a crash) is a
+            // real failure and shouldn't be swallowed as a benign cancel.
+            // When terminationReason is .uncaughtSignal, terminationStatus
+            // holds the signal number rather than an exit code.
+            if process.terminationReason == .uncaughtSignal, process.terminationStatus == SIGTERM {
                 throw YtDlpError.cancelled
             }
             throw YtDlpError.processFailed(
