@@ -117,7 +117,13 @@ final class YtDlpModel {
 
     /// Asks yt-dlp for its version string and publishes it to `output`.
     /// Also serves as a quick sanity check that the bundled binary runs.
+    ///
+    /// Bails out if a fetch or download is already in flight rather than
+    /// relying solely on the UI's `.disabled(isBusy)` — a fast double-click
+    /// can race ahead of SwiftUI's re-render and call this twice before the
+    /// button actually becomes disabled.
     func runVersion() {
+        guard !isBusy else { return }
         isLoading = true
         errorMessage = nil
 
@@ -133,7 +139,11 @@ final class YtDlpModel {
 
     /// Fetches metadata for the video at `urlString` (without downloading it)
     /// and publishes the decoded result to `videoInfo`.
+    ///
+    /// Bails out if a fetch or download is already in flight — see the note
+    /// on `runVersion()`.
     func fetchInfo(for urlString: String) {
+        guard !isBusy else { return }
         isLoading = true
         errorMessage = nil
         videoInfo = nil
@@ -164,7 +174,11 @@ final class YtDlpModel {
 
     /// Downloads the video at `urlString` into the user's Downloads folder,
     /// updating `downloadProgress` and `downloadPhase` as it goes.
+    ///
+    /// Bails out if a fetch or download is already in flight — see the note
+    /// on `runVersion()`.
     func download(urlString: String) {
+        guard !isBusy else { return }
         isDownloading = true
         downloadProgress = 0.0
         errorMessage = nil
