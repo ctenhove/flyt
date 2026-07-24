@@ -23,22 +23,22 @@ struct ContentView: View {
 
     @State private var model: YtDlpModel
 
+    /// Video-capable formats, best quality first. Cached rather than
+    /// recomputed on every body evaluation — SwiftUI re-evaluates body many
+    /// times a second while downloadProgress updates, and re-filtering/
+    /// re-sorting the full formats list on every one of those ticks would be
+    /// wasted work, since the list only actually changes once per fetch.
+    @State private var videoFormats: [VideoFormat] = []
+    /// Audio-only formats, best quality first. See `videoFormats`.
+    @State private var audioFormats: [VideoFormat] = []
+
     init(dependencyManager: DependencyManager) {
         _model = State(wrappedValue: YtDlpModel(dependencyManager: dependencyManager))
     }
 
-    /// Video-capable formats, best quality first.
-    private var videoFormats: [VideoFormat] {
-        (model.videoInfo?.formats ?? [])
-            .filter { $0.hasVideo }
-            .sorted { $0.qualityRank > $1.qualityRank }
-    }
-
-    /// Audio-only formats, best quality first.
-    private var audioFormats: [VideoFormat] {
-        (model.videoInfo?.formats ?? [])
-            .filter { $0.isAudioOnly }
-            .sorted { $0.qualityRank > $1.qualityRank }
+    /// Filters and sorts `formats` best-quality-first.
+    private static func sortedFormats(_ formats: [VideoFormat], where predicate: (VideoFormat) -> Bool) -> [VideoFormat] {
+        formats.filter(predicate).sorted { $0.qualityRank > $1.qualityRank }
     }
 
     /// True when both a video and an audio track are selected, meaning
@@ -82,6 +82,8 @@ struct ContentView: View {
         selectedVideoFormatID = nil
         selectedAudioFormatID = nil
         fileName = ""
+        videoFormats = []
+        audioFormats = []
     }
 
     /// Opens a native folder picker defaulted to `destinationFolder`.
@@ -131,6 +133,8 @@ struct ContentView: View {
                 Text(info.title)
                     .font(.headline)
                     .onChange(of: info.formats, initial: true) {
+                        videoFormats = Self.sortedFormats(info.formats) { $0.hasVideo }
+                        audioFormats = Self.sortedFormats(info.formats) { $0.isAudioOnly }
                         if selectedVideoFormatID == nil {
                             selectedVideoFormatID = videoFormats.first?.id
                         }
