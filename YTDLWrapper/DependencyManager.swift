@@ -58,8 +58,20 @@ final class DependencyManager {
         binDirectory.appendingPathComponent("ffmpeg")
     }
 
+    /// Records the SHA-256 of the zip that produced the currently installed
+    /// `ffmpeg`, so a later bump of `pinnedRelease` can be detected even
+    /// though the extracted binary itself carries no version marker.
+    private nonisolated var installedReleaseMarkerURL: URL {
+        binDirectory.appendingPathComponent("ffmpeg.version")
+    }
+
+    /// True only if the binary exists *and* matches the currently pinned
+    /// release — an install from a since-superseded `pinnedRelease` is
+    /// treated as not installed so it gets replaced.
     nonisolated func isFFmpegInstalled() -> Bool {
-        FileManager.default.isExecutableFile(atPath: ffmpegURL.path)
+        guard FileManager.default.isExecutableFile(atPath: ffmpegURL.path) else { return false }
+        let installedSHA256 = try? String(contentsOf: installedReleaseMarkerURL, encoding: .utf8)
+        return installedSHA256 == pinnedRelease.sha256
     }
 
     /// Installs ffmpeg unless it is already present, driving `setupState`
@@ -165,6 +177,9 @@ final class DependencyManager {
             [.posixPermissions: 0o755],
             ofItemAtPath: ffmpegURL.path
         )
+
+        // Record what's now installed so a future pinnedRelease bump can be detected.
+        try pinnedRelease.sha256.write(to: installedReleaseMarkerURL, atomically: true, encoding: .utf8)
     }
 
     /// Downloads to a temporary file via URLSessionDownloadTask, publishing
