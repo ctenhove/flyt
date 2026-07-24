@@ -11,12 +11,11 @@ import SwiftUI
 /// it to the Downloads folder with live progress.
 struct ContentView: View {
     
-    /// Sentinel selection meaning "don't download this track".
-    private static let skipOption = "none"
-
     @State private var urlString: String = ""
-    @State private var selectedVideoFormatID: String = ContentView.skipOption
-    @State private var selectedAudioFormatID: String = ContentView.skipOption
+    /// nil means "don't download this track".
+    @State private var selectedVideoFormatID: String?
+    /// nil means "don't download this track".
+    @State private var selectedAudioFormatID: String?
     @State private var selectedOutputContainer: OutputContainer = .mp4
     @State private var destinationFolder: URL = YtDlpModel.defaultDownloadsDirectory
     /// The file name without its extension; the real extension is appended by yt-dlp.
@@ -45,7 +44,7 @@ struct ContentView: View {
     /// True when both a video and an audio track are selected, meaning
     /// yt-dlp will actually mux them — the only time the container choice matters.
     private var willMerge: Bool {
-        selectedVideoFormatID != Self.skipOption && selectedAudioFormatID != Self.skipOption
+        selectedVideoFormatID != nil && selectedAudioFormatID != nil
     }
 
     /// A best-effort preview of the final file extension, shown next to the
@@ -80,8 +79,8 @@ struct ContentView: View {
     /// stale state from one video can't be sent alongside a different URL.
     private func resetFetchedState() {
         model.videoInfo = nil
-        selectedVideoFormatID = Self.skipOption
-        selectedAudioFormatID = Self.skipOption
+        selectedVideoFormatID = nil
+        selectedAudioFormatID = nil
         fileName = ""
     }
 
@@ -132,11 +131,11 @@ struct ContentView: View {
                 Text(info.title)
                     .font(.headline)
                     .onChange(of: info.formats, initial: true) {
-                        if selectedVideoFormatID == Self.skipOption {
-                            selectedVideoFormatID = videoFormats.first?.id ?? Self.skipOption
+                        if selectedVideoFormatID == nil {
+                            selectedVideoFormatID = videoFormats.first?.id
                         }
-                        if selectedAudioFormatID == Self.skipOption {
-                            selectedAudioFormatID = audioFormats.first?.id ?? Self.skipOption
+                        if selectedAudioFormatID == nil {
+                            selectedAudioFormatID = audioFormats.first?.id
                         }
                         if fileName.isEmpty {
                             fileName = info.title
@@ -145,18 +144,18 @@ struct ContentView: View {
 
                 if !videoFormats.isEmpty {
                     Picker("Video", selection: $selectedVideoFormatID) {
-                        Text("None").tag(Self.skipOption)
+                        Text("None").tag(nil as String?)
                         ForEach(videoFormats) { format in
-                            Text(format.label).tag(format.id)
+                            Text(format.label).tag(format.id as String?)
                         }
                     }
                 }
 
                 if !audioFormats.isEmpty {
                     Picker("Audio", selection: $selectedAudioFormatID) {
-                        Text("None").tag(Self.skipOption)
+                        Text("None").tag(nil as String?)
                         ForEach(audioFormats) { format in
-                            Text(format.label).tag(format.id)
+                            Text(format.label).tag(format.id as String?)
                         }
                     }
                 }
@@ -195,8 +194,8 @@ struct ContentView: View {
                     Button("Download") {
                         model.download(
                             urlString: urlString,
-                            videoFormatId: selectedVideoFormatID == Self.skipOption ? nil : selectedVideoFormatID,
-                            audioFormatId: selectedAudioFormatID == Self.skipOption ? nil : selectedAudioFormatID,
+                            videoFormatId: selectedVideoFormatID,
+                            audioFormatId: selectedAudioFormatID,
                             outputContainer: selectedOutputContainer,
                             destinationFolder: destinationFolder,
                             fileName: fileName
