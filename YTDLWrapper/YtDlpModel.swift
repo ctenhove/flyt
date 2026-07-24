@@ -227,9 +227,23 @@ final class YtDlpModel {
     }
 
     /// Runs yt-dlp and returns everything it wrote to stdout once it exits.
+    private func run(args: [String]) async throws -> String {
+        try await runProcess(args: args, reportProgress: false).joined(separator: "\n")
+    }
+
+    /// Runs yt-dlp, parsing its stdout line by line as it arrives so progress
+    /// updates live. Throws if the process exits non-zero.
+    private func runWithProgress(args: [String]) async throws {
+        _ = try await runProcess(args: args, reportProgress: true)
+    }
+
+    /// Runs yt-dlp and collects its stdout lines. When `reportProgress` is
+    /// true, each stdout line is also fed to `processOutputLine` as it
+    /// arrives, driving the live download UI; when false, lines are just
+    /// collected for the caller to consume once the process exits.
     /// Runs off the main actor: the pipe reads and `waitUntilExit()` block.
     @concurrent
-    private func run(args: [String]) async throws -> String {
+    private func runProcess(args: [String], reportProgress: Bool) async throws -> [String] {
         let process = Process()
         process.executableURL = try locateBinary()
         process.arguments = args
@@ -249,55 +263,6 @@ final class YtDlpModel {
         // on a full pipe buffer, keeping the text to report if yt-dlp fails.
         async let stderrLines: [String] = {
             var lines: [String] = []
-            for try await line in errorPipe.fileHandleForReading.bytes.lines {
-                print("yt-dlp stderr: \(line)")
-                lines.append(line)
-            }
-            return lines
-        }()
-
-        var outputLines: [String] = []
-        for try await line in outputPipe.fileHandleForReading.bytes.lines {
-            outputLines.append(line)
-        }
-
-        let stderrOutput = (try? await stderrLines) ?? []
-        process.waitUntilExit()
-
-        guard process.terminationStatus == 0 else {
-            // A signal-terminated process means `cancel()` killed it.
-            if process.terminationReason == .uncaughtSignal {
-                throw YtDlpError.cancelled
-            }
-            throw YtDlpError.processFailed(
-                Self.failureMessage(stderrLines: stderrOutput, status: process.terminationStatus)
-            )
-        }
-
-        return outputLines.joined(separator: "\n")
-    }
-
-    /// Runs yt-dlp, parsing its stdout line by line as it arrives so progress
-    /// updates live. Throws if the process exits non-zero.
-    @concurrent
-    private func runWithProgress(args: [String]) async throws {
-        let process = Process()
-        process.executableURL = try locateBinary()
-        process.arguments = args
-
-        let outputPipe = Pipe()
-        let errorPipe = Pipe()
-        process.standardOutput = outputPipe
-        process.standardError = errorPipe
-
-        try process.run()
-        activeProcess = process
-        defer { activeProcess = nil }
-
-        // Drain stderr concurrently with stdout so the child can't block
-        // on a full pipe, keeping the text to report if yt-dlp fails.
-        async let stderrLines: [String] = {
-            var lines: [String] = []
             for await line in Self.lines(from: errorPipe.fileHandleForReading) {
                 print("yt-dlp stderr: \(line)")
                 lines.append(line)
@@ -305,8 +270,12 @@ final class YtDlpModel {
             return lines
         }()
 
+        var outputLines: [String] = []
         for await line in Self.lines(from: outputPipe.fileHandleForReading) {
-            await processOutputLine(line)
+            outputLines.append(line)
+            if reportProgress {
+                await processOutputLine(line)
+            }
         }
 
         let stderrOutput = await stderrLines
@@ -321,6 +290,8 @@ final class YtDlpModel {
                 Self.failureMessage(stderrLines: stderrOutput, status: process.terminationStatus)
             )
         }
+
+        return outputLines
     }
 
     /// Streams a pipe's contents as lines as they're written, instead of
