@@ -39,6 +39,21 @@ enum YtDlpError: LocalizedError {
     }
 }
 
+private extension Error {
+    /// A diagnostic description: prefers `LocalizedError.errorDescription`
+    /// for errors that define one (e.g. `YtDlpError`), but falls back to the
+    /// full case dump otherwise. `DecodingError` (thrown when yt-dlp's
+    /// `--dump-json` output is malformed) doesn't conform to `LocalizedError`,
+    /// so `.localizedDescription` on it collapses to a generic, undiagnosable
+    /// "The operation couldn't be completed" message.
+    var diagnosticDescription: String {
+        if let localizedError = self as? LocalizedError, let description = localizedError.errorDescription {
+            return description
+        }
+        return String(describing: self)
+    }
+}
+
 /// Metadata about a video, decoded from yt-dlp's `--dump-json` output.
 /// Only the fields the app needs are declared; the decoder ignores the rest.
 struct VideoInfo: Codable {
@@ -110,7 +125,7 @@ final class YtDlpModel {
             do {
                 output = try await run(args: ["--version"])
             } catch {
-                errorMessage = error.localizedDescription
+                errorMessage = error.diagnosticDescription
             }
             isLoading = false
         }
@@ -141,7 +156,7 @@ final class YtDlpModel {
             } catch YtDlpError.cancelled {
                 // User-initiated; leave the UI clean rather than showing an error.
             } catch {
-                errorMessage = error.localizedDescription
+                errorMessage = error.diagnosticDescription
             }
             isLoading = false
         }
@@ -174,7 +189,7 @@ final class YtDlpModel {
             } catch YtDlpError.cancelled {
                 // User-initiated; leave the UI clean rather than showing an error.
             } catch {
-                errorMessage = error.localizedDescription
+                errorMessage = error.diagnosticDescription
             }
             isDownloading = false
             downloadPhase = .idle
