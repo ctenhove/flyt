@@ -76,6 +76,15 @@ struct ContentView: View {
         return true
     }
 
+    /// Clears the previously fetched video and its dependent selections, so
+    /// stale state from one video can't be sent alongside a different URL.
+    private func resetFetchedState() {
+        model.videoInfo = nil
+        selectedVideoFormatID = Self.skipOption
+        selectedAudioFormatID = Self.skipOption
+        fileName = ""
+    }
+
     /// Opens a native folder picker defaulted to `destinationFolder`.
     private func chooseDestinationFolder() {
         let panel = NSOpenPanel()
@@ -99,11 +108,15 @@ struct ContentView: View {
             HStack {
                 TextField("Paste video URL", text: $urlString)
                     .textFieldStyle(.roundedBorder)
+                    .onChange(of: urlString) {
+                        // Editing the URL invalidates any previously fetched
+                        // video — otherwise Download could send format IDs
+                        // from the old video against the new URL.
+                        resetFetchedState()
+                    }
 
                 Button("Fetch Info") {
-                    selectedVideoFormatID = Self.skipOption
-                    selectedAudioFormatID = Self.skipOption
-                    fileName = ""
+                    resetFetchedState()
                     model.fetchInfo(for: urlString)
                 }
                 .disabled(model.isBusy || !isValidURL)
