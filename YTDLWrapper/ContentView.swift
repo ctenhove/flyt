@@ -22,11 +22,9 @@ struct ContentView: View {
     /// The file name without its extension; the real extension is appended by yt-dlp.
     @State private var fileName: String = ""
 
-    let dependencyManager: DependencyManager
     @State private var model: YtDlpModel
 
     init(dependencyManager: DependencyManager) {
-        self.dependencyManager = dependencyManager
         _model = State(wrappedValue: YtDlpModel(dependencyManager: dependencyManager))
     }
 
@@ -65,6 +63,19 @@ struct ContentView: View {
         return ""
     }
 
+    /// True if `urlString` parses as an http(s) URL with a host — cheap
+    /// client-side validation before handing it to yt-dlp, which otherwise
+    /// only reports a malformed URL after a slow subprocess round-trip.
+    private var isValidURL: Bool {
+        guard let url = URL(string: urlString.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              url.host != nil else {
+            return false
+        }
+        return true
+    }
+
     /// Opens a native folder picker defaulted to `destinationFolder`.
     private func chooseDestinationFolder() {
         let panel = NSOpenPanel()
@@ -95,7 +106,13 @@ struct ContentView: View {
                     fileName = ""
                     model.fetchInfo(for: urlString)
                 }
-                .disabled(model.isBusy || urlString.isEmpty)
+                .disabled(model.isBusy || !isValidURL)
+            }
+
+            if !urlString.isEmpty && !isValidURL {
+                Text("Enter a valid http(s) URL.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             if let info = model.videoInfo {
@@ -172,7 +189,13 @@ struct ContentView: View {
                             fileName: fileName
                         )
                     }
-                    .disabled(model.isBusy || urlString.isEmpty || model.videoInfo == nil)
+                    .disabled(model.isBusy || !isValidURL || model.videoInfo == nil)
+
+                    if model.isBusy {
+                        Button("Cancel") {
+                            model.cancel()
+                        }
+                    }
                 }
             }
 

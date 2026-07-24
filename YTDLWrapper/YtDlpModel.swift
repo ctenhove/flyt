@@ -28,11 +28,13 @@ enum DownloadPhase {
 enum YtDlpError: LocalizedError {
     case binaryNotFound
     case processFailed(String)
+    case cancelled
 
     var errorDescription: String? {
         switch self {
         case .binaryNotFound: return "The bundled yt-dlp binary is missing."
         case .processFailed(let detail): return detail
+        case .cancelled: return "Cancelled."
         }
     }
 }
@@ -47,6 +49,21 @@ enum OutputContainer: String, CaseIterable, Identifiable, Hashable {
 
     var id: String { rawValue }
     var label: String { rawValue }
+}
+
+private extension Error {
+    /// A diagnostic description: prefers `LocalizedError.errorDescription`
+    /// for errors that define one (e.g. `YtDlpError`), but falls back to the
+    /// full case dump otherwise. `DecodingError` (thrown when yt-dlp's
+    /// `--dump-json` output is malformed) doesn't conform to `LocalizedError`,
+    /// so `.localizedDescription` on it collapses to a generic, undiagnosable
+    /// "The operation couldn't be completed" message.
+    var diagnosticDescription: String {
+        if let localizedError = self as? LocalizedError, let description = localizedError.errorDescription {
+            return description
+        }
+        return String(describing: self)
+    }
 }
 
 /// Metadata about a video, decoded from yt-dlp's `--dump-json` output.
@@ -209,14 +226,23 @@ final class YtDlpModel {
 
     // MARK: Private state
 
-    /// Number of "Destination:" lines seen this download; the first stream
-    /// is the video track, any later ones are audio — unless no video track
-    /// was requested, see `expectsVideoTrack`.
+    /// Number of distinct "Destination:" file paths seen this download; the
+    /// first stream is the video track, any later ones are audio — unless no
+    /// video track was requested, see `expectsVideoTrack`.
     private var destinationCount = 0
+    /// Destination paths already counted, so a reprinted "Destination:" line
+    /// for the same file — e.g. a retried fragment — doesn't advance the phase.
+    private var seenDestinations: Set<String> = []
     /// Whether the current download includes a video track, so the first
     /// "Destination:" line is labeled correctly for audio-only downloads.
     private var expectsVideoTrack = true
     private let dependencyManager: DependencyManager
+
+    /// The yt-dlp process currently running, if any, so `cancel()` can
+    /// terminate it while `run`/`runWithProgress` are executing off the main
+    /// actor. `Process.terminate()` is safe to call from any thread, so this
+    /// is marked unsafe rather than hopping actors on every process start/stop.
+    private nonisolated(unsafe) var activeProcess: Process?
 
     /// The user's Downloads folder, offered as the default destination.
     nonisolated static var defaultDownloadsDirectory: URL {
@@ -231,7 +257,13 @@ final class YtDlpModel {
 
     /// Asks yt-dlp for its version string and publishes it to `output`.
     /// Also serves as a quick sanity check that the bundled binary runs.
+    ///
+    /// Bails out if a fetch or download is already in flight rather than
+    /// relying solely on the UI's `.disabled(isBusy)` — a fast double-click
+    /// can race ahead of SwiftUI's re-render and call this twice before the
+    /// button actually becomes disabled.
     func runVersion() {
+        guard !isBusy else { return }
         isLoading = true
         errorMessage = nil
 
@@ -239,7 +271,7 @@ final class YtDlpModel {
             do {
                 output = try await run(args: ["--version"])
             } catch {
-                errorMessage = error.localizedDescription
+                errorMessage = error.diagnosticDescription
             }
             isLoading = false
         }
@@ -247,7 +279,11 @@ final class YtDlpModel {
 
     /// Fetches metadata for the video at `urlString` (without downloading it)
     /// and publishes the decoded result to `videoInfo`.
+    ///
+    /// Bails out if a fetch or download is already in flight — see the note
+    /// on `runVersion()`.
     func fetchInfo(for urlString: String) {
+        guard !isBusy else { return }
         isLoading = true
         errorMessage = nil
         videoInfo = nil
@@ -256,10 +292,21 @@ final class YtDlpModel {
             do {
                 // --dump-json prints the video's metadata as a single JSON
                 // object on stdout instead of downloading anything.
-                let result = try await run(args: ["--dump-json", urlString])
+                // --no-playlist forces single-video mode: without it, a
+                // playlist URL makes yt-dlp print one JSON object per entry,
+                // which wouldn't parse as the single VideoInfo we expect.
+                // --ffmpeg-location points at the bundled binary so yt-dlp
+                // doesn't warn about a missing system ffmpeg it doesn't need.
+                let result = try await run(args: [
+                    "--dump-json", "--no-playlist",
+                    "--ffmpeg-location", dependencyManager.ffmpegURL.path,
+                    urlString
+                ])
                 videoInfo = try JSONDecoder().decode(VideoInfo.self, from: Data(result.utf8))
+            } catch YtDlpError.cancelled {
+                // User-initiated; leave the UI clean rather than showing an error.
             } catch {
-                errorMessage = error.localizedDescription
+                errorMessage = error.diagnosticDescription
             }
             isLoading = false
         }
@@ -275,6 +322,9 @@ final class YtDlpModel {
     /// is needed (e.g. only one track was selected). `fileName` is used
     /// without its extension — yt-dlp appends the real one; an empty
     /// `fileName` falls back to the video's title.
+    ///
+    /// Bails out if a fetch or download is already in flight — see the note
+    /// on `runVersion()`.
     func download(
         urlString: String,
         videoFormatId: String?,
@@ -283,16 +333,23 @@ final class YtDlpModel {
         destinationFolder: URL,
         fileName: String
     ) {
+        guard !isBusy else { return }
         isDownloading = true
         downloadProgress = 0.0
         errorMessage = nil
         expectsVideoTrack = videoFormatId != nil
         downloadPhase = expectsVideoTrack ? .downloadingVideo : .downloadingAudio
         destinationCount = 0
+        seenDestinations = []
 
         let nameComponent = fileName.isEmpty ? "%(title)s" : fileName
         var args = [
             "--newline",
+            // Force single-video mode: without this, a playlist URL
+            // downloads every entry in sequence, each with its own
+            // video/audio destination pair, which would blow past
+            // the two streams processOutputLine expects to see.
+            "--no-playlist",
             "--ffmpeg-location", dependencyManager.ffmpegURL.path,
             "--merge-output-format", outputContainer.rawValue,
             "-o", "\(destinationFolder.path)/\(nameComponent).%(ext)s"
@@ -307,12 +364,20 @@ final class YtDlpModel {
             do {
                 try await runWithProgress(args: args)
                 downloadProgress = 1.0
+            } catch YtDlpError.cancelled {
+                // User-initiated; leave the UI clean rather than showing an error.
             } catch {
-                errorMessage = error.localizedDescription
+                errorMessage = error.diagnosticDescription
             }
             isDownloading = false
             downloadPhase = .idle
         }
+    }
+
+    /// Cancels the in-flight fetch or download, if any, by terminating the
+    /// underlying yt-dlp process. Safe to call even if nothing is running.
+    func cancel() {
+        activeProcess?.terminate()
     }
 
     // MARK: Running yt-dlp
@@ -326,9 +391,23 @@ final class YtDlpModel {
     }
 
     /// Runs yt-dlp and returns everything it wrote to stdout once it exits.
+    private func run(args: [String]) async throws -> String {
+        try await runProcess(args: args, reportProgress: false).joined(separator: "\n")
+    }
+
+    /// Runs yt-dlp, parsing its stdout line by line as it arrives so progress
+    /// updates live. Throws if the process exits non-zero.
+    private func runWithProgress(args: [String]) async throws {
+        _ = try await runProcess(args: args, reportProgress: true)
+    }
+
+    /// Runs yt-dlp and collects its stdout lines. When `reportProgress` is
+    /// true, each stdout line is also fed to `processOutputLine` as it
+    /// arrives, driving the live download UI; when false, lines are just
+    /// collected for the caller to consume once the process exits.
     /// Runs off the main actor: the pipe reads and `waitUntilExit()` block.
     @concurrent
-    private func run(args: [String]) async throws -> String {
+    private func runProcess(args: [String], reportProgress: Bool) async throws -> [String] {
         let process = Process()
         process.executableURL = try locateBinary()
         process.arguments = args
@@ -341,52 +420,11 @@ final class YtDlpModel {
         process.standardError = errorPipe
 
         try process.run()
+        activeProcess = process
+        defer { activeProcess = nil }
 
         // Drain stderr concurrently with stdout so the child can't block
         // on a full pipe buffer, keeping the text to report if yt-dlp fails.
-        async let stderrLines: [String] = {
-            var lines: [String] = []
-            for try await line in errorPipe.fileHandleForReading.bytes.lines {
-                print("yt-dlp stderr: \(line)")
-                lines.append(line)
-            }
-            return lines
-        }()
-
-        var outputLines: [String] = []
-        for try await line in outputPipe.fileHandleForReading.bytes.lines {
-            outputLines.append(line)
-        }
-
-        let stderrOutput = (try? await stderrLines) ?? []
-        process.waitUntilExit()
-
-        guard process.terminationStatus == 0 else {
-            throw YtDlpError.processFailed(
-                Self.failureMessage(stderrLines: stderrOutput, status: process.terminationStatus)
-            )
-        }
-
-        return outputLines.joined(separator: "\n")
-    }
-
-    /// Runs yt-dlp, parsing its stdout line by line as it arrives so progress
-    /// updates live. Throws if the process exits non-zero.
-    @concurrent
-    private func runWithProgress(args: [String]) async throws {
-        let process = Process()
-        process.executableURL = try locateBinary()
-        process.arguments = args
-
-        let outputPipe = Pipe()
-        let errorPipe = Pipe()
-        process.standardOutput = outputPipe
-        process.standardError = errorPipe
-
-        try process.run()
-
-        // Drain stderr concurrently with stdout so the child can't block
-        // on a full pipe, keeping the text to report if yt-dlp fails.
         async let stderrLines: [String] = {
             var lines: [String] = []
             for await line in Self.lines(from: errorPipe.fileHandleForReading) {
@@ -396,18 +434,32 @@ final class YtDlpModel {
             return lines
         }()
 
+        var outputLines: [String] = []
         for await line in Self.lines(from: outputPipe.fileHandleForReading) {
-            await processOutputLine(line)
+            outputLines.append(line)
+            if reportProgress {
+                await processOutputLine(line)
+            }
         }
 
         let stderrOutput = await stderrLines
         process.waitUntilExit()
 
         guard process.terminationStatus == 0 else {
+            // `cancel()` sends SIGTERM specifically, so only that signal means
+            // *we* killed it. Any other uncaught signal (e.g. a crash) is a
+            // real failure and shouldn't be swallowed as a benign cancel.
+            // When terminationReason is .uncaughtSignal, terminationStatus
+            // holds the signal number rather than an exit code.
+            if process.terminationReason == .uncaughtSignal, process.terminationStatus == SIGTERM {
+                throw YtDlpError.cancelled
+            }
             throw YtDlpError.processFailed(
                 Self.failureMessage(stderrLines: stderrOutput, status: process.terminationStatus)
             )
         }
+
+        return outputLines
     }
 
     /// Streams a pipe's contents as lines as they're written, instead of
@@ -456,7 +508,12 @@ final class YtDlpModel {
     /// Interprets one complete line of yt-dlp stdout and updates observable state.
     private func processOutputLine(_ line: String) {
         // Each stream yt-dlp downloads starts with its own Destination line.
-        if line.contains("[download] Destination:") {
+        // A retried/resumed fragment can reprint the same line for the file
+        // already in progress, so only a *new* path counts as a new stream.
+        if line.contains("[download] Destination:"),
+           let dest = Self.parseDestination(from: line),
+           !seenDestinations.contains(dest) {
+            seenDestinations.insert(dest)
             destinationCount += 1
             let isVideoTrack = destinationCount == 1 && expectsVideoTrack
             downloadPhase = isVideoTrack ? .downloadingVideo : .downloadingAudio
