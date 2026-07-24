@@ -190,12 +190,12 @@ struct ContentView: View {
                         )
                     }
                     .disabled(model.isBusy || !isValidURL || model.videoInfo == nil)
+                }
+            }
 
-                    if model.isBusy {
-                        Button("Cancel") {
-                            model.cancel()
-                        }
-                    }
+            if model.isBusy {
+                Button("Cancel") {
+                    model.cancel()
                 }
             }
 
