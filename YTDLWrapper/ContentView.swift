@@ -12,12 +12,10 @@ import SwiftUI
 struct ContentView: View {
     
     @State private var urlString: String = ""
-    
-    let dependencyManager: DependencyManager
+
     @State private var model: YtDlpModel
-    
+
     init(dependencyManager: DependencyManager) {
-        self.dependencyManager = dependencyManager
         _model = State(wrappedValue: YtDlpModel(dependencyManager: dependencyManager))
     }
 

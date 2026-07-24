@@ -230,9 +230,21 @@ final class DependencyManager {
     }
 
     /// Throws unless `fileURL`'s SHA-256 matches `expectedSHA256`.
+    ///
+    /// Streams the file in fixed-size chunks rather than loading it whole:
+    /// hashing has to fault in every page regardless, so `Data(contentsOf:)`
+    /// bought nothing but held the entire (tens-of-MB) file in memory at once.
     private nonisolated func verifyChecksum(of fileURL: URL, expectedSHA256: String) throws {
-        let fileData = try Data(contentsOf: fileURL, options: .mappedIfSafe)
-        let actualHash = SHA256.hash(data: fileData)
+        let handle = try FileHandle(forReadingFrom: fileURL)
+        defer { try? handle.close() }
+
+        var hasher = SHA256()
+        let chunkSize = 1 << 20 // 1 MB
+        while let chunk = try handle.read(upToCount: chunkSize), !chunk.isEmpty {
+            hasher.update(data: chunk)
+        }
+
+        let actualHash = hasher.finalize()
             .map { String(format: "%02x", $0) }
             .joined()
 
