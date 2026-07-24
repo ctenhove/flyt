@@ -163,10 +163,12 @@ final class DependencyManager {
             withIntermediateDirectories: true
         )
 
-        let tempZipURL = try await downloadWithProgress(from: ffmpegDownloadURL)
+        let tempZipURL = try await download(from: ffmpegDownloadURL) { [weak self] fraction in
+            Task { @MainActor in self?.downloadProgress = fraction }
+        }
         defer { try? FileManager.default.removeItem(at: tempZipURL) }
 
-        try verifyChecksum(of: tempZipURL)
+        try verifyChecksum(of: tempZipURL, expectedSHA256: pinnedRelease.sha256)
         try unzip(at: tempZipURL, to: binDirectory)
 
         guard FileManager.default.fileExists(atPath: ffmpegURL.path) else {
@@ -183,46 +185,58 @@ final class DependencyManager {
         try pinnedRelease.sha256.write(to: installedReleaseMarkerURL, atomically: true, encoding: .utf8)
     }
 
-    /// Downloads to a temporary file via URLSessionDownloadTask, publishing
-    /// progress through a delegate bridged to an AsyncStream.
+    /// Downloads `url` to a temporary file, invoking `onProgress` with a
+    /// 0...1 fraction a few times a second while the transfer is in flight.
+    /// Generic over the source URL so it can back both ffmpeg installation
+    /// today and a yt-dlp self-update later — this function doesn't know or
+    /// care what it's downloading.
     ///
-    /// The previous URLSession.AsyncBytes approach iterated one UInt8 at a time,
-    /// causing tens of millions of async-sequence iterations for a ~50 MB file.
+    /// `URLSessionTask.progress` is safe to read from any thread, so a plain
+    /// polling loop reports progress without needing a delegate class.
     @concurrent
-    private func downloadWithProgress(from url: URL) async throws -> URL {
-        let delegate = FFmpegDownloadDelegate()
-        let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
-        defer { session.finishTasksAndInvalidate() }
+    private func download(from url: URL, onProgress: @escaping @Sendable (Double) -> Void) async throws -> URL {
+        var progressPoller: Task<Void, Never>?
+        defer { progressPoller?.cancel() }
 
-        session.downloadTask(with: url).resume()
-
-        var lastPublishedProgress = 0.0
-        for await event in delegate.events {
-            switch event {
-            case .progress(let fraction):
-                // Only publish whole-percent steps so the UI isn't flooded with updates.
-                if fraction - lastPublishedProgress >= 0.01 {
-                    lastPublishedProgress = fraction
-                    await MainActor.run { downloadProgress = fraction }
+        let (location, response) = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<(URL, URLResponse), Error>) in
+            let task = URLSession.shared.downloadTask(with: url) { location, response, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else if let location, let response {
+                    continuation.resume(returning: (location, response))
+                } else {
+                    continuation.resume(throwing: DependencyError.downloadFailed)
                 }
-            case .finished(let tempURL):
-                await MainActor.run { downloadProgress = 1.0 }
-                return tempURL
-            case .failed(let error):
-                throw error
             }
+            progressPoller = Task {
+                while !Task.isCancelled {
+                    onProgress(task.progress.fractionCompleted)
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
+            }
+            task.resume()
         }
-        throw DependencyError.downloadFailed
+
+        guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
+            throw DependencyError.downloadFailed
+        }
+
+        // URLSession deletes its temp file as soon as the completion handler
+        // returns, so move it somewhere durable before this function returns.
+        let dest = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.moveItem(at: location, to: dest)
+        onProgress(1.0)
+        return dest
     }
 
-    /// Throws unless the file's SHA-256 matches the pinned hash for this architecture.
-    private nonisolated func verifyChecksum(of fileURL: URL) throws {
+    /// Throws unless `fileURL`'s SHA-256 matches `expectedSHA256`.
+    private nonisolated func verifyChecksum(of fileURL: URL, expectedSHA256: String) throws {
         let fileData = try Data(contentsOf: fileURL, options: .mappedIfSafe)
         let actualHash = SHA256.hash(data: fileData)
             .map { String(format: "%02x", $0) }
             .joined()
 
-        guard actualHash == pinnedRelease.sha256 else {
+        guard actualHash == expectedSHA256 else {
             throw DependencyError.checksumMismatch
         }
     }
@@ -244,59 +258,5 @@ final class DependencyManager {
         guard process.terminationStatus == 0 else {
             throw DependencyError.unzipFailed
         }
-    }
-}
-
-// MARK: - Download delegate
-
-/// Bridges URLSessionDownloadDelegate callbacks into an AsyncStream so
-/// downloadWithProgress can consume them with structured concurrency.
-private final class FFmpegDownloadDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
-
-    enum Event {
-        case progress(Double)
-        case finished(URL)
-        case failed(Error)
-    }
-
-    private let continuation: AsyncStream<Event>.Continuation
-    let events: AsyncStream<Event>
-
-    override init() {
-        var cont: AsyncStream<Event>.Continuation!
-        events = AsyncStream { cont = $0 }
-        continuation = cont
-        super.init()
-    }
-
-    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
-        guard totalBytesExpectedToWrite > 0 else { return }
-        let fraction = min(Double(totalBytesWritten) / Double(totalBytesExpectedToWrite), 1.0)
-        continuation.yield(.progress(fraction))
-    }
-
-    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
-        if let httpResponse = downloadTask.response as? HTTPURLResponse,
-           !(200...299).contains(httpResponse.statusCode) {
-            continuation.yield(.failed(DependencyError.downloadFailed))
-            return
-        }
-        // URLSession reclaims `location` once this method returns; move it first.
-        let dest = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString)
-            .appendingPathExtension("zip")
-        do {
-            try FileManager.default.moveItem(at: location, to: dest)
-            continuation.yield(.finished(dest))
-        } catch {
-            continuation.yield(.failed(error))
-        }
-    }
-
-    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        if let error {
-            continuation.yield(.failed(error))
-        }
-        continuation.finish()
     }
 }
