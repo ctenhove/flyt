@@ -45,6 +45,12 @@ final class DependencyManager {
     /// nil while the total size is still unknown.
     private(set) var downloadProgress: Double?
 
+    /// The in-flight setup run, if any. Guards against a second WindowGroup
+    /// scene (e.g. Cmd+N) re-entering `performSetupIfNeeded()` while
+    /// `installFFmpeg()` is still writing into `binDirectory` — without this,
+    /// two concurrent `unzip` calls could race into the same directory.
+    private var setupTask: Task<Void, Never>?
+
     // MARK: Public API
 
     /// Path of the installed ffmpeg binary; passed to yt-dlp via `--ffmpeg-location`.
@@ -52,13 +58,39 @@ final class DependencyManager {
         binDirectory.appendingPathComponent("ffmpeg")
     }
 
+    /// Records the SHA-256 of the zip that produced the currently installed
+    /// `ffmpeg`, so a later bump of `pinnedRelease` can be detected even
+    /// though the extracted binary itself carries no version marker.
+    private nonisolated var installedReleaseMarkerURL: URL {
+        binDirectory.appendingPathComponent("ffmpeg.version")
+    }
+
+    /// True only if the binary exists *and* matches the currently pinned
+    /// release — an install from a since-superseded `pinnedRelease` is
+    /// treated as not installed so it gets replaced.
     nonisolated func isFFmpegInstalled() -> Bool {
-        FileManager.default.isExecutableFile(atPath: ffmpegURL.path)
+        guard FileManager.default.isExecutableFile(atPath: ffmpegURL.path) else { return false }
+        let installedSHA256 = try? String(contentsOf: installedReleaseMarkerURL, encoding: .utf8)
+        return installedSHA256 == pinnedRelease.sha256
     }
 
     /// Installs ffmpeg unless it is already present, driving `setupState`
-    /// through the stages so views can react.
+    /// through the stages so views can react. Safe to call from multiple
+    /// windows at once: if a run is already in flight, this just awaits it
+    /// instead of starting a second `installFFmpeg()`.
     func performSetupIfNeeded() async {
+        if let setupTask {
+            await setupTask.value
+            return
+        }
+
+        let task = Task { await self.runSetup() }
+        setupTask = task
+        await task.value
+        setupTask = nil
+    }
+
+    private func runSetup() async {
         setupState = .checking
 
         if isFFmpegInstalled() {
@@ -90,22 +122,23 @@ final class DependencyManager {
 
     // MARK: Pinned release
 
-    /// The pinned ffmpeg release build and the SHA-256 of its zip.
+    /// The pinned ffmpeg release tag and the SHA-256 of its zip, hosted on
+    /// our own GitHub releases.
     ///
     /// Hardcoding the hash means a tampered download fails verification even
-    /// if the server itself is compromised. To update: pick a new release at
-    /// https://ffmpeg.martin-riedl.de, then update the build ID and hash for
-    /// both architectures (compute with `shasum -a 256 ffmpeg.zip`).
-    private nonisolated var pinnedRelease: (buildID: String, sha256: String) {
+    /// if the server itself is compromised. To update: publish a new release
+    /// at https://github.com/ctenhove/YTDLPWrapper-Dependencies/releases,
+    /// then update the tag and hash for both architectures
+    /// (compute with `shasum -a 256 ffmpeg-<arch>.zip`).
+    private nonisolated var pinnedRelease: (tag: String, sha256: String) {
         #if arch(arm64)
-        ("1783011502_8.1.2", "ef1aa60006c7b77ce170c1608c08d8e4ba1c30c5746f2ac986ded932d0ac2c3c")
+        ("v8.1.2", "ef1aa60006c7b77ce170c1608c08d8e4ba1c30c5746f2ac986ded932d0ac2c3c")
         #else
-        ("1783018342_8.1.2", "a52ef43883f44c219766d4b3bdde4e635b35465d0b704c01c3a0566b59775df9")
+        ("v8.1.2", "a52ef43883f44c219766d4b3bdde4e635b35465d0b704c01c3a0566b59775df9")
         #endif
     }
 
-    /// The architecture segment used in download URLs — "amd64" is the
-    /// build server's name for Intel.
+    /// The architecture segment used in the release asset's filename.
     private nonisolated var architecture: String {
         #if arch(arm64)
         return "arm64"
@@ -115,7 +148,7 @@ final class DependencyManager {
     }
 
     private nonisolated var ffmpegDownloadURL: URL {
-        URL(string: "https://ffmpeg.martin-riedl.de/download/macos/\(architecture)/\(pinnedRelease.buildID)/ffmpeg.zip")!
+        URL(string: "https://github.com/ctenhove/YTDLPWrapper-Dependencies/releases/download/\(pinnedRelease.tag)/ffmpeg-\(architecture).zip")!
     }
 
     // MARK: Installation
@@ -130,10 +163,12 @@ final class DependencyManager {
             withIntermediateDirectories: true
         )
 
-        let tempZipURL = try await downloadWithProgress(from: ffmpegDownloadURL)
+        let tempZipURL = try await download(from: ffmpegDownloadURL) { [weak self] fraction in
+            Task { @MainActor in self?.downloadProgress = fraction }
+        }
         defer { try? FileManager.default.removeItem(at: tempZipURL) }
 
-        try verifyChecksum(of: tempZipURL)
+        try verifyChecksum(of: tempZipURL, expectedSHA256: pinnedRelease.sha256)
         try unzip(at: tempZipURL, to: binDirectory)
 
         guard FileManager.default.fileExists(atPath: ffmpegURL.path) else {
@@ -145,48 +180,75 @@ final class DependencyManager {
             [.posixPermissions: 0o755],
             ofItemAtPath: ffmpegURL.path
         )
+
+        // Record what's now installed so a future pinnedRelease bump can be detected.
+        try pinnedRelease.sha256.write(to: installedReleaseMarkerURL, atomically: true, encoding: .utf8)
     }
 
-    /// Downloads to a temporary file via URLSessionDownloadTask, publishing
-    /// progress through a delegate bridged to an AsyncStream.
+    /// Downloads `url` to a temporary file, invoking `onProgress` with a
+    /// 0...1 fraction a few times a second while the transfer is in flight.
+    /// Generic over the source URL so it can back both ffmpeg installation
+    /// today and a yt-dlp self-update later — this function doesn't know or
+    /// care what it's downloading.
     ///
-    /// The previous URLSession.AsyncBytes approach iterated one UInt8 at a time,
-    /// causing tens of millions of async-sequence iterations for a ~50 MB file.
+    /// `URLSessionTask.progress` is safe to read from any thread, so a plain
+    /// polling loop reports progress without needing a delegate class.
     @concurrent
-    private func downloadWithProgress(from url: URL) async throws -> URL {
-        let delegate = FFmpegDownloadDelegate()
-        let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
-        defer { session.finishTasksAndInvalidate() }
+    private func download(from url: URL, onProgress: @escaping @Sendable (Double) -> Void) async throws -> URL {
+        var progressPoller: Task<Void, Never>?
+        defer { progressPoller?.cancel() }
 
-        session.downloadTask(with: url).resume()
-
-        var lastPublishedProgress = 0.0
-        for await event in delegate.events {
-            switch event {
-            case .progress(let fraction):
-                // Only publish whole-percent steps so the UI isn't flooded with updates.
-                if fraction - lastPublishedProgress >= 0.01 {
-                    lastPublishedProgress = fraction
-                    await MainActor.run { downloadProgress = fraction }
+        let (location, response) = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<(URL, URLResponse), Error>) in
+            let task = URLSession.shared.downloadTask(with: url) { location, response, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else if let location, let response {
+                    continuation.resume(returning: (location, response))
+                } else {
+                    continuation.resume(throwing: DependencyError.downloadFailed)
                 }
-            case .finished(let tempURL):
-                await MainActor.run { downloadProgress = 1.0 }
-                return tempURL
-            case .failed(let error):
-                throw error
             }
+            progressPoller = Task {
+                while !Task.isCancelled {
+                    onProgress(task.progress.fractionCompleted)
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
+            }
+            task.resume()
         }
-        throw DependencyError.downloadFailed
+
+        guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
+            throw DependencyError.downloadFailed
+        }
+
+        // URLSession deletes its temp file as soon as the completion handler
+        // returns, so move it somewhere durable before this function returns.
+        let dest = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.moveItem(at: location, to: dest)
+        onProgress(1.0)
+        return dest
     }
 
-    /// Throws unless the file's SHA-256 matches the pinned hash for this architecture.
-    private nonisolated func verifyChecksum(of fileURL: URL) throws {
-        let fileData = try Data(contentsOf: fileURL, options: .mappedIfSafe)
-        let actualHash = SHA256.hash(data: fileData)
+    /// Throws unless `fileURL`'s SHA-256 matches `expectedSHA256`.
+    ///
+    /// Streams the file in fixed-size chunks rather than loading it whole:
+    /// hashing has to fault in every page regardless, so `Data(contentsOf:)`
+    /// bought nothing but held the entire (tens-of-MB) file in memory at once.
+    private nonisolated func verifyChecksum(of fileURL: URL, expectedSHA256: String) throws {
+        let handle = try FileHandle(forReadingFrom: fileURL)
+        defer { try? handle.close() }
+
+        var hasher = SHA256()
+        let chunkSize = 1 << 20 // 1 MB
+        while let chunk = try handle.read(upToCount: chunkSize), !chunk.isEmpty {
+            hasher.update(data: chunk)
+        }
+
+        let actualHash = hasher.finalize()
             .map { String(format: "%02x", $0) }
             .joined()
 
-        guard actualHash == pinnedRelease.sha256 else {
+        guard actualHash == expectedSHA256 else {
             throw DependencyError.checksumMismatch
         }
     }
@@ -208,59 +270,5 @@ final class DependencyManager {
         guard process.terminationStatus == 0 else {
             throw DependencyError.unzipFailed
         }
-    }
-}
-
-// MARK: - Download delegate
-
-/// Bridges URLSessionDownloadDelegate callbacks into an AsyncStream so
-/// downloadWithProgress can consume them with structured concurrency.
-private final class FFmpegDownloadDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
-
-    enum Event {
-        case progress(Double)
-        case finished(URL)
-        case failed(Error)
-    }
-
-    private let continuation: AsyncStream<Event>.Continuation
-    let events: AsyncStream<Event>
-
-    override init() {
-        var cont: AsyncStream<Event>.Continuation!
-        events = AsyncStream { cont = $0 }
-        continuation = cont
-        super.init()
-    }
-
-    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
-        guard totalBytesExpectedToWrite > 0 else { return }
-        let fraction = min(Double(totalBytesWritten) / Double(totalBytesExpectedToWrite), 1.0)
-        continuation.yield(.progress(fraction))
-    }
-
-    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
-        if let httpResponse = downloadTask.response as? HTTPURLResponse,
-           !(200...299).contains(httpResponse.statusCode) {
-            continuation.yield(.failed(DependencyError.downloadFailed))
-            return
-        }
-        // URLSession reclaims `location` once this method returns; move it first.
-        let dest = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString)
-            .appendingPathExtension("zip")
-        do {
-            try FileManager.default.moveItem(at: location, to: dest)
-            continuation.yield(.finished(dest))
-        } catch {
-            continuation.yield(.failed(error))
-        }
-    }
-
-    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        if let error {
-            continuation.yield(.failed(error))
-        }
-        continuation.finish()
     }
 }

@@ -12,7 +12,6 @@ struct SetupView: View {
     let state: DependencyManager.SetupState
     /// Download completion in 0...1; nil shows an indeterminate spinner.
     let downloadProgress: Double?
-    let onRetry: () -> Void
 
     var body: some View {
         VStack(spacing: 20) {
@@ -48,7 +47,13 @@ struct SetupView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
-                Button("Try Again", action: onRetry)
+                Text("ffmpeg is required and couldn't be installed. The app will now quit.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                Button("Quit") {
+                    NSApplication.shared.terminate(nil)
+                }
             }
         }
         .padding()
