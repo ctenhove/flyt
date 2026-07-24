@@ -342,7 +342,7 @@ final class YtDlpModel {
         destinationCount = 0
         seenDestinations = []
 
-        let nameComponent = fileName.isEmpty ? "%(title)s" : fileName
+        let nameComponent = fileName.isEmpty ? "%(title)s" : Self.sanitizedFileNameComponent(fileName)
         var args = [
             "--newline",
             // Force single-video mode: without this, a playlist URL
@@ -378,6 +378,17 @@ final class YtDlpModel {
     /// underlying yt-dlp process. Safe to call even if nothing is running.
     func cancel() {
         activeProcess?.terminate()
+    }
+
+    /// Escapes a user-supplied name for safe use as a path segment in yt-dlp's
+    /// `-o` output template: `/` would otherwise be read as a directory
+    /// separator (e.g. a title like "AC/DC - Thunderstruck" would create an
+    /// unintended "AC" subfolder), and `%` starts a `%(field)s` reference in
+    /// yt-dlp's own template syntax.
+    private nonisolated static func sanitizedFileNameComponent(_ name: String) -> String {
+        name
+            .replacingOccurrences(of: "%", with: "%%")
+            .replacingOccurrences(of: "/", with: "-")
     }
 
     // MARK: Running yt-dlp
