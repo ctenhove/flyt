@@ -74,9 +74,12 @@ final class YtDlpModel {
 
     // MARK: Private state
 
-    /// Number of "Destination:" lines seen this download; the first stream
-    /// is the video track, any later ones are audio.
+    /// Number of distinct "Destination:" file paths seen this download; the
+    /// first stream is the video track, any later ones are audio.
     private var destinationCount = 0
+    /// Destination paths already counted, so a reprinted "Destination:" line
+    /// for the same file — e.g. a retried fragment — doesn't advance the phase.
+    private var seenDestinations: Set<String> = []
     private let dependencyManager: DependencyManager
 
     private nonisolated var downloadsDirectory: URL {
@@ -116,7 +119,10 @@ final class YtDlpModel {
             do {
                 // --dump-json prints the video's metadata as a single JSON
                 // object on stdout instead of downloading anything.
-                let result = try await run(args: ["--dump-json", urlString])
+                // --no-playlist forces single-video mode: without it, a
+                // playlist URL makes yt-dlp print one JSON object per entry,
+                // which wouldn't parse as the single VideoInfo we expect.
+                let result = try await run(args: ["--dump-json", "--no-playlist", urlString])
                 videoInfo = try JSONDecoder().decode(VideoInfo.self, from: Data(result.utf8))
             } catch {
                 errorMessage = error.localizedDescription
@@ -133,11 +139,17 @@ final class YtDlpModel {
         errorMessage = nil
         downloadPhase = .downloadingVideo
         destinationCount = 0
+        seenDestinations = []
 
         Task {
             do {
                 try await runWithProgress(args: [
                     "--newline",
+                    // Force single-video mode: without this, a playlist URL
+                    // downloads every entry in sequence, each with its own
+                    // video/audio destination pair, which would blow past
+                    // the two streams processOutputLine expects to see.
+                    "--no-playlist",
                     "--ffmpeg-location", dependencyManager.ffmpegURL.path,
                     "-o", "\(downloadsDirectory.path)/%(title)s.%(ext)s",
                     urlString
@@ -292,7 +304,12 @@ final class YtDlpModel {
     /// Interprets one complete line of yt-dlp stdout and updates observable state.
     private func processOutputLine(_ line: String) {
         // Each stream yt-dlp downloads starts with its own Destination line.
-        if line.contains("[download] Destination:") {
+        // A retried/resumed fragment can reprint the same line for the file
+        // already in progress, so only a *new* path counts as a new stream.
+        if line.contains("[download] Destination:"),
+           let dest = Self.parseDestination(from: line),
+           !seenDestinations.contains(dest) {
+            seenDestinations.insert(dest)
             destinationCount += 1
             downloadPhase = destinationCount == 1 ? .downloadingVideo : .downloadingAudio
             downloadProgress = 0.0
