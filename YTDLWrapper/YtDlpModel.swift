@@ -218,7 +218,8 @@ final class YtDlpModel {
     private var expectsVideoTrack = true
     private let dependencyManager: DependencyManager
 
-    private nonisolated var downloadsDirectory: URL {
+    /// The user's Downloads folder, offered as the default destination.
+    nonisolated static var defaultDownloadsDirectory: URL {
         FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first!
     }
 
@@ -264,15 +265,24 @@ final class YtDlpModel {
         }
     }
 
-    /// Downloads the video at `urlString` into the user's Downloads folder,
-    /// updating `downloadProgress` and `downloadPhase` as it goes. Pass the
+    /// Downloads the video at `urlString` into `destinationFolder`, updating
+    /// `downloadProgress` and `downloadPhase` as it goes. Pass the
     /// `format_id`s of `VideoFormat`s from `videoInfo.formats` to select
     /// specific video and/or audio streams — yt-dlp merges them if both are
     /// given. Passing `nil` for one track downloads only the other; passing
     /// `nil` for both lets yt-dlp pick its own default. `outputContainer`
     /// controls the container yt-dlp merges into; it's ignored if no merge
-    /// is needed (e.g. only one track was selected).
-    func download(urlString: String, videoFormatId: String?, audioFormatId: String?, outputContainer: OutputContainer) {
+    /// is needed (e.g. only one track was selected). `fileName` is used
+    /// without its extension — yt-dlp appends the real one; an empty
+    /// `fileName` falls back to the video's title.
+    func download(
+        urlString: String,
+        videoFormatId: String?,
+        audioFormatId: String?,
+        outputContainer: OutputContainer,
+        destinationFolder: URL,
+        fileName: String
+    ) {
         isDownloading = true
         downloadProgress = 0.0
         errorMessage = nil
@@ -280,11 +290,12 @@ final class YtDlpModel {
         downloadPhase = expectsVideoTrack ? .downloadingVideo : .downloadingAudio
         destinationCount = 0
 
+        let nameComponent = fileName.isEmpty ? "%(title)s" : fileName
         var args = [
             "--newline",
             "--ffmpeg-location", dependencyManager.ffmpegURL.path,
             "--merge-output-format", outputContainer.rawValue,
-            "-o", "\(downloadsDirectory.path)/%(title)s.%(ext)s"
+            "-o", "\(destinationFolder.path)/\(nameComponent).%(ext)s"
         ]
         let formatSelector = [videoFormatId, audioFormatId].compactMap { $0 }.joined(separator: "+")
         if !formatSelector.isEmpty {

@@ -18,6 +18,9 @@ struct ContentView: View {
     @State private var selectedVideoFormatID: String = ContentView.skipOption
     @State private var selectedAudioFormatID: String = ContentView.skipOption
     @State private var selectedOutputContainer: OutputContainer = .mp4
+    @State private var destinationFolder: URL = YtDlpModel.defaultDownloadsDirectory
+    /// The file name without its extension; the real extension is appended by yt-dlp.
+    @State private var fileName: String = ""
 
     let dependencyManager: DependencyManager
     @State private var model: YtDlpModel
@@ -47,6 +50,35 @@ struct ContentView: View {
         selectedVideoFormatID != Self.skipOption && selectedAudioFormatID != Self.skipOption
     }
 
+    /// A best-effort preview of the final file extension, shown next to the
+    /// file name field. yt-dlp determines the real one at download time.
+    private var previewExtension: String {
+        if willMerge {
+            return selectedOutputContainer.rawValue
+        }
+        if let format = videoFormats.first(where: { $0.id == selectedVideoFormatID }) {
+            return format.ext
+        }
+        if let format = audioFormats.first(where: { $0.id == selectedAudioFormatID }) {
+            return format.ext
+        }
+        return ""
+    }
+
+    /// Opens a native folder picker defaulted to `destinationFolder`.
+    private func chooseDestinationFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.directoryURL = destinationFolder
+        panel.prompt = "Choose"
+        if panel.runModal() == .OK, let url = panel.url {
+            destinationFolder = url
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("yt-dlp Downloader")
@@ -60,6 +92,7 @@ struct ContentView: View {
                 Button("Fetch Info") {
                     selectedVideoFormatID = Self.skipOption
                     selectedAudioFormatID = Self.skipOption
+                    fileName = ""
                     model.fetchInfo(for: urlString)
                 }
                 .disabled(model.isBusy || urlString.isEmpty)
@@ -74,6 +107,9 @@ struct ContentView: View {
                         }
                         if selectedAudioFormatID == Self.skipOption {
                             selectedAudioFormatID = audioFormats.first?.id ?? Self.skipOption
+                        }
+                        if fileName.isEmpty {
+                            fileName = info.title
                         }
                     }
 
@@ -102,18 +138,42 @@ struct ContentView: View {
                         }
                     }
                 }
+
+                HStack {
+                    TextField("File name", text: $fileName)
+                        .textFieldStyle(.roundedBorder)
+                    if !previewExtension.isEmpty {
+                        Text(".\(previewExtension)")
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
 
             if selectedVideoFormatID != Self.skipOption || selectedAudioFormatID != Self.skipOption {
-                Button("Download") {
-                    model.download(
-                        urlString: urlString,
-                        videoFormatId: selectedVideoFormatID == Self.skipOption ? nil : selectedVideoFormatID,
-                        audioFormatId: selectedAudioFormatID == Self.skipOption ? nil : selectedAudioFormatID,
-                        outputContainer: selectedOutputContainer
-                    )
+                HStack {
+                    Text(destinationFolder.lastPathComponent)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Button("Choose Folder…") {
+                        chooseDestinationFolder()
+                    }
+
+                    Spacer()
+
+                    Button("Download") {
+                        model.download(
+                            urlString: urlString,
+                            videoFormatId: selectedVideoFormatID == Self.skipOption ? nil : selectedVideoFormatID,
+                            audioFormatId: selectedAudioFormatID == Self.skipOption ? nil : selectedAudioFormatID,
+                            outputContainer: selectedOutputContainer,
+                            destinationFolder: destinationFolder,
+                            fileName: fileName
+                        )
+                    }
+                    .disabled(model.isBusy || urlString.isEmpty || model.videoInfo == nil)
                 }
-                .disabled(model.isBusy || urlString.isEmpty || model.videoInfo == nil)
             }
 
             if model.isLoading {
@@ -154,6 +214,6 @@ struct ContentView: View {
             Spacer()
         }
         .padding()
-        .frame(width: 480, height: 340)
+        .frame(width: 480, height: 420)
     }
 }
