@@ -337,7 +337,10 @@ final class YtDlpModel {
         isDownloading = true
         downloadProgress = 0.0
         errorMessage = nil
-        expectsVideoTrack = videoFormatId != nil
+        // yt-dlp's own default format selection (both nil) resolves to
+        // bestvideo+bestaudio, i.e. video first — so the first destination
+        // is audio only when the caller explicitly picked audio with no video.
+        expectsVideoTrack = !(videoFormatId == nil && audioFormatId != nil)
         downloadPhase = expectsVideoTrack ? .downloadingVideo : .downloadingAudio
         destinationCount = 0
         seenDestinations = []
