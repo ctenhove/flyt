@@ -20,7 +20,20 @@ struct ContentView: View {
         self.dependencyManager = dependencyManager
         _model = State(wrappedValue: YtDlpModel(dependencyManager: dependencyManager))
     }
-    
+
+    /// True if `urlString` parses as an http(s) URL with a host — cheap
+    /// client-side validation before handing it to yt-dlp, which otherwise
+    /// only reports a malformed URL after a slow subprocess round-trip.
+    private var isValidURL: Bool {
+        guard let url = URL(string: urlString.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              url.host != nil else {
+            return false
+        }
+        return true
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("yt-dlp Downloader")
@@ -34,7 +47,13 @@ struct ContentView: View {
                 Button("Fetch Info") {
                     model.fetchInfo(for: urlString)
                 }
-                .disabled(model.isBusy || urlString.isEmpty)
+                .disabled(model.isBusy || !isValidURL)
+            }
+
+            if !urlString.isEmpty && !isValidURL {
+                Text("Enter a valid http(s) URL.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             if let info = model.videoInfo {
@@ -46,7 +65,7 @@ struct ContentView: View {
                 Button("Download") {
                     model.download(urlString: urlString)
                 }
-                .disabled(model.isBusy || urlString.isEmpty)
+                .disabled(model.isBusy || !isValidURL)
 
                 if model.isBusy {
                     Button("Cancel") {
