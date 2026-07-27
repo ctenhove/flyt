@@ -39,6 +39,18 @@ enum YtDlpError: LocalizedError {
     }
 }
 
+/// Container to mux the final output into, passed to yt-dlp's
+/// `--merge-output-format`. Only takes effect when yt-dlp actually needs to
+/// merge separate video/audio streams; it's ignored otherwise.
+enum OutputContainer: String, CaseIterable, Identifiable, Hashable {
+    case mp4
+    case mkv
+    case webm
+
+    var id: String { rawValue }
+    var label: String { rawValue }
+}
+
 private extension Error {
     /// A diagnostic description: prefers `LocalizedError.errorDescription`
     /// for errors that define one (e.g. `YtDlpError`), but falls back to the
@@ -61,6 +73,129 @@ struct VideoInfo: Codable {
     let thumbnail: String?
     /// Length in seconds, if known (live streams may have none).
     let duration: Double?
+    /// Every format yt-dlp offers for this video, worst to best as yt-dlp orders them.
+    let formats: [VideoFormat]
+}
+
+/// One downloadable format of a video, decoded from an entry in yt-dlp's
+/// `--dump-json` "formats" array. Only the fields the picker UI needs are
+/// declared; the decoder ignores the rest.
+///
+/// Sites like YouTube publish many formats per video: separate DASH streams
+/// for each video codec (avc1/h264, vp9, av1), separate 30fps/60fps variants
+/// at the same resolution, and sometimes a legacy "progressive" stream that
+/// already has audio muxed in alongside a video-only stream at the same
+/// resolution — which is why two entries can share a resolution/extension
+/// but differ in size.
+struct VideoFormat: Codable, Identifiable, Hashable {
+    let formatId: String
+    let ext: String
+    let resolution: String?
+    let height: Int?
+    let fps: Double?
+    let vcodec: String?
+    let acodec: String?
+    let abr: Double?
+    let tbr: Double?
+    let filesize: Int64?
+    let filesizeApprox: Int64?
+
+    var id: String { formatId }
+
+    enum CodingKeys: String, CodingKey {
+        case formatId = "format_id"
+        case ext
+        case resolution
+        case height
+        case fps
+        case vcodec
+        case acodec
+        case abr
+        case tbr
+        case filesize
+        case filesizeApprox = "filesize_approx"
+    }
+
+    /// True if this format carries a video track (yt-dlp uses vcodec "none" for audio-only formats).
+    var hasVideo: Bool {
+        guard let vcodec else { return false }
+        return vcodec != "none"
+    }
+
+    /// True if this format is audio-only.
+    var isAudioOnly: Bool {
+        !hasVideo && acodec != nil && acodec != "none"
+    }
+
+    /// True if this format has no separate audio track (common for high-res DASH video streams).
+    var isVideoOnly: Bool {
+        hasVideo && (acodec == nil || acodec == "none")
+    }
+
+    /// A rough quality score for sorting/defaulting a picker to "best first".
+    var qualityRank: Double {
+        if hasVideo {
+            return Double((height ?? 0) * 1000) + (fps ?? 0)
+        }
+        return abr ?? tbr ?? 0
+    }
+
+    /// A short human-readable summary for a format picker, e.g.
+    /// "1080p60 · mp4 · h264 · video only · 85.4 MB" or "128 kbps · m4a · aac · 3.1 MB".
+    var label: String {
+        var components: [String] = []
+
+        if isAudioOnly {
+            if let abr {
+                components.append("\(Int(abr)) kbps")
+            }
+            components.append(ext)
+            if let codec = Self.shortCodec(acodec) {
+                components.append(codec)
+            }
+        } else {
+            if let resolution {
+                components.append(resolution)
+            } else if let height {
+                components.append("\(height)p")
+            }
+            if let fps, fps > 30 {
+                components.append("\(Int(fps))fps")
+            }
+            components.append(ext)
+            if let codec = Self.shortCodec(vcodec) {
+                components.append(codec)
+            }
+            if isVideoOnly {
+                components.append("video only")
+            }
+        }
+
+        if let size = Self.formattedFileSize(filesize ?? filesizeApprox) {
+            components.append(size)
+        }
+
+        return components.joined(separator: " · ")
+    }
+
+    /// Maps a raw yt-dlp codec string (e.g. "avc1.640028", "vp09.00.40.08")
+    /// to a short recognizable name.
+    private static func shortCodec(_ raw: String?) -> String? {
+        guard let raw, raw != "none" else { return nil }
+        let base = raw.split(separator: ".").first.map(String.init) ?? raw
+        switch base {
+        case "avc1": return "h264"
+        case "vp9", "vp09": return "vp9"
+        case "av01": return "av1"
+        case "mp4a": return "aac"
+        default: return base
+        }
+    }
+
+    private static func formattedFileSize(_ bytes: Int64?) -> String? {
+        guard let bytes else { return nil }
+        return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
 }
 
 /// Wraps the bundled `yt-dlp_macos` command-line binary and exposes its
@@ -92,11 +227,15 @@ final class YtDlpModel {
     // MARK: Private state
 
     /// Number of distinct "Destination:" file paths seen this download; the
-    /// first stream is the video track, any later ones are audio.
+    /// first stream is the video track, any later ones are audio — unless no
+    /// video track was requested, see `expectsVideoTrack`.
     private var destinationCount = 0
     /// Destination paths already counted, so a reprinted "Destination:" line
     /// for the same file — e.g. a retried fragment — doesn't advance the phase.
     private var seenDestinations: Set<String> = []
+    /// Whether the current download includes a video track, so the first
+    /// "Destination:" line is labeled correctly for audio-only downloads.
+    private var expectsVideoTrack = true
     private let dependencyManager: DependencyManager
 
     /// The yt-dlp process currently running, if any, so `cancel()` can
@@ -105,7 +244,8 @@ final class YtDlpModel {
     /// is marked unsafe rather than hopping actors on every process start/stop.
     private nonisolated(unsafe) var activeProcess: Process?
 
-    private nonisolated var downloadsDirectory: URL {
+    /// The user's Downloads folder, offered as the default destination.
+    nonisolated static var defaultDownloadsDirectory: URL {
         FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first!
     }
 
@@ -172,33 +312,60 @@ final class YtDlpModel {
         }
     }
 
-    /// Downloads the video at `urlString` into the user's Downloads folder,
-    /// updating `downloadProgress` and `downloadPhase` as it goes.
+    /// Downloads the video at `urlString` into `destinationFolder`, updating
+    /// `downloadProgress` and `downloadPhase` as it goes. Pass the
+    /// `format_id`s of `VideoFormat`s from `videoInfo.formats` to select
+    /// specific video and/or audio streams — yt-dlp merges them if both are
+    /// given. Passing `nil` for one track downloads only the other; passing
+    /// `nil` for both lets yt-dlp pick its own default. `outputContainer`
+    /// controls the container yt-dlp merges into; it's ignored if no merge
+    /// is needed (e.g. only one track was selected). `fileName` is used
+    /// without its extension — yt-dlp appends the real one; an empty
+    /// `fileName` falls back to the video's title.
     ///
     /// Bails out if a fetch or download is already in flight — see the note
     /// on `runVersion()`.
-    func download(urlString: String) {
+    func download(
+        urlString: String,
+        videoFormatId: String?,
+        audioFormatId: String?,
+        outputContainer: OutputContainer,
+        destinationFolder: URL,
+        fileName: String
+    ) {
         guard !isBusy else { return }
         isDownloading = true
         downloadProgress = 0.0
         errorMessage = nil
-        downloadPhase = .downloadingVideo
+        // yt-dlp's own default format selection (both nil) resolves to
+        // bestvideo+bestaudio, i.e. video first — so the first destination
+        // is audio only when the caller explicitly picked audio with no video.
+        expectsVideoTrack = !(videoFormatId == nil && audioFormatId != nil)
+        downloadPhase = expectsVideoTrack ? .downloadingVideo : .downloadingAudio
         destinationCount = 0
         seenDestinations = []
 
+        let nameComponent = fileName.isEmpty ? "%(title)s" : Self.sanitizedFileNameComponent(fileName)
+        var args = [
+            "--newline",
+            // Force single-video mode: without this, a playlist URL
+            // downloads every entry in sequence, each with its own
+            // video/audio destination pair, which would blow past
+            // the two streams processOutputLine expects to see.
+            "--no-playlist",
+            "--ffmpeg-location", dependencyManager.ffmpegURL.path,
+            "--merge-output-format", outputContainer.rawValue,
+            "-o", "\(destinationFolder.path)/\(nameComponent).%(ext)s"
+        ]
+        let formatSelector = [videoFormatId, audioFormatId].compactMap { $0 }.joined(separator: "+")
+        if !formatSelector.isEmpty {
+            args += ["-f", formatSelector]
+        }
+        args.append(urlString)
+
         Task {
             do {
-                try await runWithProgress(args: [
-                    "--newline",
-                    // Force single-video mode: without this, a playlist URL
-                    // downloads every entry in sequence, each with its own
-                    // video/audio destination pair, which would blow past
-                    // the two streams processOutputLine expects to see.
-                    "--no-playlist",
-                    "--ffmpeg-location", dependencyManager.ffmpegURL.path,
-                    "-o", "\(downloadsDirectory.path)/%(title)s.%(ext)s",
-                    urlString
-                ])
+                try await runWithProgress(args: args)
                 downloadProgress = 1.0
             } catch YtDlpError.cancelled {
                 // User-initiated; leave the UI clean rather than showing an error.
@@ -214,6 +381,17 @@ final class YtDlpModel {
     /// underlying yt-dlp process. Safe to call even if nothing is running.
     func cancel() {
         activeProcess?.terminate()
+    }
+
+    /// Escapes a user-supplied name for safe use as a path segment in yt-dlp's
+    /// `-o` output template: `/` would otherwise be read as a directory
+    /// separator (e.g. a title like "AC/DC - Thunderstruck" would create an
+    /// unintended "AC" subfolder), and `%` starts a `%(field)s` reference in
+    /// yt-dlp's own template syntax.
+    private nonisolated static func sanitizedFileNameComponent(_ name: String) -> String {
+        name
+            .replacingOccurrences(of: "%", with: "%%")
+            .replacingOccurrences(of: "/", with: "-")
     }
 
     // MARK: Running yt-dlp
@@ -351,7 +529,8 @@ final class YtDlpModel {
            !seenDestinations.contains(dest) {
             seenDestinations.insert(dest)
             destinationCount += 1
-            downloadPhase = destinationCount == 1 ? .downloadingVideo : .downloadingAudio
+            let isVideoTrack = destinationCount == 1 && expectsVideoTrack
+            downloadPhase = isVideoTrack ? .downloadingVideo : .downloadingAudio
             downloadProgress = 0.0
         }
 
