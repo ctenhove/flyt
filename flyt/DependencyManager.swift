@@ -1,6 +1,6 @@
 //
 //  DependencyManager.swift
-//  YTDLWrapper
+//  flyt
 //
 //  Created by Colin Ten Hove on 2026-07-08.
 //
@@ -113,7 +113,7 @@ final class DependencyManager {
 
     private nonisolated var appSupportDirectory: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return base.appendingPathComponent("YTDLWrapper", isDirectory: true)
+        return base.appendingPathComponent("flyt", isDirectory: true)
     }
 
     private nonisolated var binDirectory: URL {

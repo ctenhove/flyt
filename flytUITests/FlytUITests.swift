@@ -1,13 +1,13 @@
 //
-//  YTDLWrapperUITests.swift
-//  YTDLWrapperUITests
+//  FlytUITests.swift
+//  flytUITests
 //
 //  Created by Colin Ten Hove on 2026-07-07.
 //
 
 import XCTest
 
-final class YTDLWrapperUITests: XCTestCase {
+final class FlytUITests: XCTestCase {
 
     override func setUpWithError() throws {
         // Later UI steps rarely make sense after one fails, so stop immediately.
