@@ -73,8 +73,19 @@ struct VideoInfo: Codable {
     let thumbnail: String?
     /// Length in seconds, if known (live streams may have none).
     let duration: Double?
+    let channel: String?
+    let viewCount: Int?
     /// Every format yt-dlp offers for this video, worst to best as yt-dlp orders them.
     let formats: [VideoFormat]
+
+    enum CodingKeys: String, CodingKey {
+        case title
+        case thumbnail
+        case duration
+        case channel
+        case viewCount = "view_count"
+        case formats
+    }
 }
 
 /// One downloadable format of a video, decoded from an entry in yt-dlp's
@@ -383,15 +394,28 @@ final class YtDlpModel {
         activeProcess?.terminate()
     }
 
-    /// Escapes a user-supplied name for safe use as a path segment in yt-dlp's
-    /// `-o` output template: `/` would otherwise be read as a directory
-    /// separator (e.g. a title like "AC/DC - Thunderstruck" would create an
-    /// unintended "AC" subfolder), and `%` starts a `%(field)s` reference in
-    /// yt-dlp's own template syntax.
+    /// Sanitizes a user-supplied name for safe use as a path segment in
+    /// yt-dlp's `-o` output template: strips filesystem-hostile characters
+    /// (`/` would otherwise be read as a directory separator — e.g. a title
+    /// like "AC/DC - Thunderstruck" would create an unintended "AC"
+    /// subfolder) and control characters, collapses runs of whitespace, and
+    /// caps the length well under typical filesystem limits. `%` is escaped
+    /// last so yt-dlp's own template syntax — which reads a bare `%` as the
+    /// start of a `%(field)s` reference — never sees one from user input.
     private nonisolated static func sanitizedFileNameComponent(_ name: String) -> String {
-        name
-            .replacingOccurrences(of: "%", with: "%%")
-            .replacingOccurrences(of: "/", with: "-")
+        var sanitized = String(name.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) })
+        for character in ["/", ":", "\\"] {
+            sanitized = sanitized.replacingOccurrences(of: character, with: "-")
+        }
+        sanitized = sanitized
+            .components(separatedBy: .whitespaces)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        sanitized = sanitized.replacingOccurrences(of: "%", with: "%%")
+        while sanitized.utf8.count > 255 {
+            sanitized.removeLast()
+        }
+        return sanitized
     }
 
     // MARK: Running yt-dlp
