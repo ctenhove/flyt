@@ -28,5 +28,8 @@ struct FlytApp: App {
                 await dependencyManager.performSetupIfNeeded()
             }
         }
+        // Compact window (README §3): fixed width, height driven by
+        // ContentView's own content — no manual NSWindow frame math.
+        .windowResizability(.contentSize)
     }
 }

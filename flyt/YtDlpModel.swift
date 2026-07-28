@@ -68,7 +68,7 @@ private extension Error {
 
 /// Metadata about a video, decoded from yt-dlp's `--dump-json` output.
 /// Only the fields the app needs are declared; the decoder ignores the rest.
-struct VideoInfo: Codable {
+struct VideoInfo: Codable, Equatable {
     let title: String
     let thumbnail: String?
     /// Length in seconds, if known (live streams may have none).
