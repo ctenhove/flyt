@@ -395,27 +395,14 @@ final class YtDlpModel {
     }
 
     /// Sanitizes a user-supplied name for safe use as a path segment in
-    /// yt-dlp's `-o` output template: strips filesystem-hostile characters
-    /// (`/` would otherwise be read as a directory separator — e.g. a title
-    /// like "AC/DC - Thunderstruck" would create an unintended "AC"
-    /// subfolder) and control characters, collapses runs of whitespace, and
-    /// caps the length well under typical filesystem limits. `%` is escaped
-    /// last so yt-dlp's own template syntax — which reads a bare `%` as the
-    /// start of a `%(field)s` reference — never sees one from user input.
+    /// yt-dlp's `-o` output template. Builds on `FilenamePolicy.sanitize`
+    /// (filesystem-hostile/control characters, whitespace, length) and adds
+    /// one thing specific to yt-dlp's own template syntax: escaping `%`,
+    /// which it would otherwise read as the start of a `%(field)s`
+    /// reference. Applied last, after the general sanitization, so a `%`
+    /// introduced by that pass (there isn't one) couldn't slip through unescaped.
     private nonisolated static func sanitizedFileNameComponent(_ name: String) -> String {
-        var sanitized = String(name.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) })
-        for character in ["/", ":", "\\"] {
-            sanitized = sanitized.replacingOccurrences(of: character, with: "-")
-        }
-        sanitized = sanitized
-            .components(separatedBy: .whitespaces)
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
-        sanitized = sanitized.replacingOccurrences(of: "%", with: "%%")
-        while sanitized.utf8.count > 255 {
-            sanitized.removeLast()
-        }
-        return sanitized
+        FilenamePolicy.sanitize(name).replacingOccurrences(of: "%", with: "%%")
     }
 
     // MARK: Running yt-dlp
