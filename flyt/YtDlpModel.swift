@@ -9,7 +9,7 @@ import Foundation
 import Observation
 
 /// The user-visible stage of an in-flight download.
-enum DownloadPhase {
+enum DownloadPhase: Equatable {
     case idle
     case downloadingVideo
     case downloadingAudio
@@ -231,6 +231,15 @@ final class YtDlpModel {
     var downloadPhase: DownloadPhase = .idle
     /// Where the last download landed, parsed from yt-dlp's output.
     var lastDownloadedFile: URL?
+    /// Downloaded-so-far and total size, already unit-formatted (e.g.
+    /// "34.1 MB", "74.3 MB"), derived from yt-dlp's own progress line.
+    /// `nil` until the first progress line with a total size arrives.
+    var downloadedSizeText: String?
+    var totalSizeText: String?
+    /// Transfer speed exactly as yt-dlp prints it (e.g. "4.10MiB/s").
+    var speedText: String?
+    /// Remaining time exactly as yt-dlp prints it (e.g. "00:12").
+    var etaText: String?
     var isBusy: Bool {
         isLoading || isDownloading
     }
@@ -347,6 +356,10 @@ final class YtDlpModel {
         guard !isBusy else { return }
         isDownloading = true
         downloadProgress = 0.0
+        downloadedSizeText = nil
+        totalSizeText = nil
+        speedText = nil
+        etaText = nil
         errorMessage = nil
         // yt-dlp's own default format selection (both nil) resolves to
         // bestvideo+bestaudio, i.e. video first — so the first destination
@@ -553,6 +566,19 @@ final class YtDlpModel {
             downloadProgress = percent
         }
 
+        if let detail = Self.parseProgressDetail(from: line) {
+            totalSizeText = detail.total
+            speedText = detail.speed
+            etaText = detail.eta
+            // yt-dlp only prints the *total* size per progress line, not how
+            // much has landed so far, so derive that from the percentage
+            // already parsed above rather than a separate field.
+            if let totalBytes = Self.parseByteCount(detail.total) {
+                let downloadedBytes = Int64(Double(totalBytes) * downloadProgress)
+                downloadedSizeText = ByteCountFormatter.string(fromByteCount: downloadedBytes, countStyle: .file)
+            }
+        }
+
         if let dest = Self.parseDestination(from: line) {
             lastDownloadedFile = URL(fileURLWithPath: dest)
         }
@@ -564,6 +590,33 @@ final class YtDlpModel {
     private nonisolated static func parseProgress(from line: String) -> Double? {
         guard let match = line.firstMatch(of: /(\d+\.\d+)%/) else { return nil }
         return Double(match.1).map { $0 / 100.0 }
+    }
+
+    /// Extracts the unit-formatted total size, speed, and ETA yt-dlp prints
+    /// on its own progress line, e.g. "[download]  46.5% of ~74.32MiB at
+    /// 4.10MiB/s ETA 00:12" — already human-readable, so passed through as-is
+    /// rather than re-parsed into raw numbers (`parseByteCount` below only
+    /// exists to derive the downloaded-so-far figure, which yt-dlp doesn't
+    /// print directly).
+    private nonisolated static func parseProgressDetail(from line: String) -> (total: String, speed: String, eta: String)? {
+        guard let match = line.firstMatch(of: /of\s+~?([\d.]+\w+)\s+at\s+([\d.]+\w+\/s)\s+ETA\s+(\S+)/) else { return nil }
+        return (total: String(match.1), speed: String(match.2), eta: String(match.3))
+    }
+
+    /// Parses a yt-dlp size string like "74.32MiB" into raw bytes. Only
+    /// needs to handle the units yt-dlp actually prints in `--newline` mode.
+    private nonisolated static func parseByteCount(_ text: String) -> Int64? {
+        guard let match = text.firstMatch(of: /([\d.]+)(B|KiB|MiB|GiB|TiB)/) else { return nil }
+        guard let value = Double(match.1) else { return nil }
+        let multiplier: Double
+        switch String(match.2) {
+        case "KiB": multiplier = 1_024
+        case "MiB": multiplier = 1_048_576
+        case "GiB": multiplier = 1_073_741_824
+        case "TiB": multiplier = 1_099_511_627_776
+        default: multiplier = 1
+        }
+        return Int64(value * multiplier)
     }
 
     /// Extracts the output file path from a "Destination:" or Merger line,
