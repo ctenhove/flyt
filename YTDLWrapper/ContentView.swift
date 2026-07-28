@@ -22,6 +22,7 @@ struct ContentView: View {
     @State private var fileName: String = ""
 
     @State private var model: YtDlpModel
+    private let dependencyManager: DependencyManager
 
     /// Video-capable formats, best quality first. Cached rather than
     /// recomputed on every body evaluation — SwiftUI re-evaluates body many
@@ -34,6 +35,7 @@ struct ContentView: View {
 
     init(dependencyManager: DependencyManager) {
         _model = State(wrappedValue: YtDlpModel(dependencyManager: dependencyManager))
+        self.dependencyManager = dependencyManager
     }
 
     /// Filters and sorts `formats` best-quality-first.
@@ -105,6 +107,14 @@ struct ContentView: View {
             Text("yt-dlp Downloader")
                 .font(.largeTitle)
                 .bold()
+
+            // Only shown once a self-update has actually installed a
+            // copy — the bundled fallback binary has no tracked version.
+            if let version = dependencyManager.installedYtdlpVersion {
+                Text("yt-dlp \(version)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
 
             HStack {
                 TextField("Paste video URL", text: $urlString)
