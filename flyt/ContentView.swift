@@ -42,6 +42,7 @@ struct ContentView: View {
     @State private var markPulse = false
 
     @State private var model: YtDlpModel
+    private let dependencyManager: DependencyManager
 
     /// Video-capable formats for the current video, in yt-dlp's own order.
     /// Cached rather than recomputed on every body evaluation — SwiftUI
@@ -58,6 +59,7 @@ struct ContentView: View {
 
     init(dependencyManager: DependencyManager) {
         _model = State(wrappedValue: YtDlpModel(dependencyManager: dependencyManager))
+        self.dependencyManager = dependencyManager
     }
 
     var body: some View {
@@ -144,7 +146,7 @@ struct ContentView: View {
         switch phase {
         case .idle:
             IdleDropZone(onDropURL: handleIncomingURL)
-            FooterPathRow(destinationFolder: destinationFolder, onChange: chooseDestinationFolder)
+            FooterPathRow(destinationFolder: destinationFolder, ytdlpVersion: dependencyManager.installedYtdlpVersion, onChange: chooseDestinationFolder)
                 .frame(maxWidth: .infinity, alignment: .center)
 
         case .fetching:
@@ -184,7 +186,7 @@ struct ContentView: View {
                 }
 
                 DownloadPrimaryButton(trailingText: estimatedSizeText, action: startDownload)
-                FooterPathRow(destinationFolder: destinationFolder, onChange: chooseDestinationFolder)
+                FooterPathRow(destinationFolder: destinationFolder, ytdlpVersion: dependencyManager.installedYtdlpVersion, onChange: chooseDestinationFolder)
                     .frame(maxWidth: .infinity, alignment: .center)
             }
 

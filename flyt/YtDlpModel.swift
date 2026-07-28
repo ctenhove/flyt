@@ -420,12 +420,19 @@ final class YtDlpModel {
 
     // MARK: Running yt-dlp
 
-    /// Locates the yt-dlp binary, which ships in the app bundle as a plain resource.
+    /// Locates the yt-dlp binary: prefers a self-updated copy installed
+    /// by `DependencyManager` in Application Support, falling back to the
+    /// copy bundled in the app as a plain resource if nothing has been
+    /// installed yet (or it's gone missing).
     private nonisolated func locateBinary() throws -> URL {
-        guard let url = Bundle.main.url(forResource: "yt-dlp_macos", withExtension: nil) else {
+        let installed = dependencyManager.ytdlpURL
+        if FileManager.default.isExecutableFile(atPath: installed.path) {
+            return installed
+        }
+        guard let bundled = Bundle.main.url(forResource: "yt-dlp_macos", withExtension: nil) else {
             throw YtDlpError.binaryNotFound
         }
-        return url
+        return bundled
     }
 
     /// Runs yt-dlp and returns everything it wrote to stdout once it exits.

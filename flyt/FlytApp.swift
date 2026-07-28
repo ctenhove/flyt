@@ -25,7 +25,13 @@ struct FlytApp: App {
                 }
             }
             .task {
+                // Runs concurrently with the blocking ffmpeg setup below,
+                // not after it — a yt-dlp refresh must never delay
+                // startup, since (unlike ffmpeg) a working fallback
+                // binary already ships in the bundle either way.
+                async let ytdlpRefresh: Void = dependencyManager.refreshYtdlpIfNeeded()
                 await dependencyManager.performSetupIfNeeded()
+                await ytdlpRefresh
             }
         }
         // Compact window (README §3): fixed width, height driven by
