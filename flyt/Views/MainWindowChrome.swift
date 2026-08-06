@@ -22,14 +22,30 @@ struct MainWindowTitlebar: ToolbarContent {
     var pulse: Bool
 
     var body: some ToolbarContent {
-        ToolbarItem(placement: .principal) {
-            HStack(spacing: 6) {
-                FlytMark(size: 14)
-                    .scaleEffect(pulse ? 1.15 : 1.0)
-                Text("flyt")
-                    .font(.system(size: 12.5, weight: .bold))
-                    .foregroundStyle(.flytBodyText)
+        // Liquid Glass toolbars (macOS 26+) draw a pill-shaped glass
+        // background behind toolbar items by default, as if this were a
+        // grouped control — it isn't one, it's the brand mark, so opt this
+        // specific item out. Only available from 26 on, hence the guard;
+        // pre-26 never had that background to begin with.
+        if #available(macOS 26.0, *) {
+            ToolbarItem(placement: .principal) {
+                titlebarContent
             }
+            .sharedBackgroundVisibility(.hidden)
+        } else {
+            ToolbarItem(placement: .principal) {
+                titlebarContent
+            }
+        }
+    }
+
+    private var titlebarContent: some View {
+        HStack(spacing: 6) {
+            FlytMark(size: 14)
+                .scaleEffect(pulse ? 1.15 : 1.0)
+            Text("flyt")
+                .font(.system(size: 12.5, weight: .bold))
+                .foregroundStyle(.flytBodyText)
         }
     }
 }

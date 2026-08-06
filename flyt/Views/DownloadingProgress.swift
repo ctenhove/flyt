@@ -18,6 +18,14 @@ struct DownloadingProgress: View {
     var totalSizeText: String?
     var speedText: String?
     var etaText: String?
+    /// "Video" / "Audio", when this download has two separate streams to
+    /// fetch before merging — video and audio are unrelated files with
+    /// unrelated sizes, so the bar/percentage restart from 0% partway
+    /// through. Without a label marking that restart as a new stream
+    /// rather than a stall or a bug, it reads as the download glitching —
+    /// finishing, then inexplicably resetting. nil for a single-stream
+    /// download (video-only or audio-only), which has nothing to label.
+    var phaseLabel: String?
     var onCancel: () -> Void
 
     var body: some View {
@@ -82,9 +90,13 @@ struct DownloadingProgress: View {
     }
 
     private var leftStatsText: String {
-        let percent = "\(Int(progress * 100))%"
-        guard let downloadedSizeText, let totalSizeText else { return percent }
-        return "\(percent) · \(downloadedSizeText) of \(totalSizeText)"
+        var parts: [String] = []
+        if let phaseLabel { parts.append(phaseLabel) }
+        parts.append("\(Int(progress * 100))%")
+        if let downloadedSizeText, let totalSizeText {
+            parts.append("\(downloadedSizeText) of \(totalSizeText)")
+        }
+        return parts.joined(separator: " · ")
     }
 
     private var rightStatsText: String {

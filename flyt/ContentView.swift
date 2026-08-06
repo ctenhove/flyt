@@ -200,6 +200,7 @@ struct ContentView: View {
                     totalSizeText: model.totalSizeText,
                     speedText: model.speedText,
                     etaText: model.etaText,
+                    phaseLabel: downloadPhaseLabel,
                     onCancel: model.cancel
                 )
             }
@@ -258,6 +259,20 @@ struct ContentView: View {
     /// yt-dlp will actually mux them — the only time the container choice matters.
     private var willMerge: Bool {
         selectedVideoFormatID != nil && selectedAudioFormatID != nil
+    }
+
+    /// "Video"/"Audio" while a two-stream (merged) download is fetching
+    /// one of its tracks, so the progress bar's restart from 100% back to
+    /// 0% between them reads as a new stream starting rather than a
+    /// glitch. nil for a single-stream download, and during merging
+    /// itself (which has its own dedicated row, not a percentage).
+    private var downloadPhaseLabel: String? {
+        guard willMerge else { return nil }
+        switch model.downloadPhase {
+        case .downloadingVideo: return "Video"
+        case .downloadingAudio: return "Audio"
+        case .idle, .merging: return nil
+        }
     }
 
     /// A best-effort preview of the final file extension, shown next to the
