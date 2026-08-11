@@ -24,10 +24,10 @@ struct FlytError {
 
         if lowered.contains("private video") {
             title = "This video is private"
-            message = "flyt can only fetch videos that are publicly viewable. If you have access, try signing in from Preferences → Account."
+            message = "flyt can only fetch videos that are publicly viewable."
         } else if lowered.contains("confirm your age") || lowered.contains("age-restricted") {
             title = "This video is age-restricted"
-            message = "flyt can't fetch age-restricted videos without signing in. Try signing in from Preferences → Account."
+            message = "flyt can't fetch age-restricted videos without signing in, which isn't supported yet."
         } else if lowered.contains("available in your country") || lowered.contains("not available in your country") {
             title = "Not available in your region"
             message = "The uploader has restricted this video in your country. There's no way around this from flyt."
@@ -36,7 +36,7 @@ struct FlytError {
             message = "Only channel members can watch this video. flyt doesn't support member-gated content."
         } else if lowered.contains("unsupported url") {
             title = "That link isn't supported"
-            message = "flyt only downloads YouTube videos and playlists — double-check the link and try again."
+            message = "flyt only downloads individual YouTube videos — double-check the link and try again."
         } else if Self.looksLikeNetworkFailure(lowered) {
             title = "Connection lost"
             message = "flyt couldn't reach the internet partway through. Check your connection and try again."
