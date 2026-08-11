@@ -37,5 +37,11 @@ struct FlytApp: App {
         // Compact window (README §3): fixed width, height driven by
         // ContentView's own content — no manual NSWindow frame math.
         .windowResizability(.contentSize)
+        // flyt is a single-window utility app: drop the "New Window"
+        // command (and its ⌘N shortcut) so WindowGroup can't be asked to
+        // spawn a second copy of the main window.
+        .commands {
+            CommandGroup(replacing: .newItem) { }
+        }
     }
 }
