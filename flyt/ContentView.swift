@@ -456,7 +456,6 @@ struct ContentView: View {
         let base = filename.isEmpty ? FilenamePolicy.sanitize(info.title) : FilenamePolicy.sanitize(filename)
         let uniqueBase = FilenamePolicy.uniqueFilename(
             base: base.isEmpty ? "download" : base,
-            extension: previewExtension,
             in: destinationFolder
         )
         downloadStartedAt = Date()

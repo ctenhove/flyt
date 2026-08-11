@@ -34,13 +34,23 @@ enum FilenamePolicy {
         return sanitized
     }
 
-    /// Returns `base` unchanged if `base.ext` doesn't already exist in
-    /// `directory`, otherwise appends " (2)", " (3)"… until it finds a name
-    /// that doesn't collide.
-    static func uniqueFilename(base: String, extension ext: String, in directory: URL) -> String {
+    /// Returns `base` unchanged unless a file already exists in `directory`
+    /// whose name (before its extension) matches `base` exactly, in which
+    /// case appends " (2)", " (3)"… until no such file exists.
+    ///
+    /// Checks against *any* extension rather than a specific guessed one:
+    /// the caller only knows what extension yt-dlp is likely to write the
+    /// file with, not what it definitely will (yt-dlp determines the real
+    /// one at download time). Matching on any extension is the only way to
+    /// guarantee this never silently overwrites an existing file just
+    /// because that guess turned out wrong — at the cost of occasionally
+    /// adding a "(2)" that a perfectly accurate guess wouldn't have needed,
+    /// which is the safer direction to be wrong in.
+    static func uniqueFilename(base: String, in directory: URL) -> String {
+        let existingNames = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
         var candidate = base
         var suffix = 1
-        while FileManager.default.fileExists(atPath: directory.appendingPathComponent("\(candidate).\(ext)").path) {
+        while existingNames.contains(where: { $0.hasPrefix("\(candidate).") }) {
             suffix += 1
             candidate = "\(base) (\(suffix))"
         }

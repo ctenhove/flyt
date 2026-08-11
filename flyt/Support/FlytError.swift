@@ -43,6 +43,16 @@ struct FlytError {
         } else if lowered.contains("no space left on device") {
             title = "Not enough disk space"
             message = "There isn't enough free space at the download destination. Free up some space and try again."
+        } else if Self.isRawExitCode(rawMessage) {
+            // YtDlpModel's own last-resort fallback ("yt-dlp exited with
+            // code N") for a failure with no "ERROR" line to draw a
+            // message from at all — exactly the internal-tool text this
+            // type exists to keep off screen, so it gets its own generic
+            // copy rather than falling through to strippingErrorPrefix,
+            // which only strips a leading "ERROR:" and would otherwise
+            // pass this straight through unchanged.
+            title = "Something went wrong"
+            message = "flyt couldn't finish this. Try again in a moment."
         } else {
             title = "Something went wrong"
             message = Self.strippingErrorPrefix(rawMessage)
@@ -55,6 +65,14 @@ struct FlytError {
             || lowered.contains("connection reset")
             || lowered.contains("timed out")
             || lowered.contains("offline")
+    }
+
+    /// Matches YtDlpModel.failureMessage's own fallback text exactly, so
+    /// only that specific string is intercepted — any other message
+    /// mentioning an exit code as incidental detail still passes through
+    /// strippingErrorPrefix as before.
+    private static func isRawExitCode(_ raw: String) -> Bool {
+        raw.trimmingCharacters(in: .whitespacesAndNewlines).firstMatch(of: /^yt-dlp exited with code -?\d+$/) != nil
     }
 
     /// yt-dlp prefixes its own error lines with "ERROR:"; that prefix reads
