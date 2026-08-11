@@ -231,6 +231,13 @@ final class YtDlpModel {
     var downloadPhase: DownloadPhase = .idle
     /// Where the last download landed, parsed from yt-dlp's output.
     var lastDownloadedFile: URL?
+    /// True if the most recent download ended via `cancel()` rather than
+    /// finishing or failing. Cancellation intentionally leaves
+    /// `errorMessage` nil (see `download()`), so callers that need to tell
+    /// a genuine completion apart from a cancelled one — the main window's
+    /// completion screen, notably — need this rather than inferring it
+    /// from the absence of an error.
+    var wasCancelled = false
     /// Downloaded-so-far and total size, already unit-formatted (e.g.
     /// "34.1 MB", "74.3 MB"), derived from yt-dlp's own progress line.
     /// `nil` until the first progress line with a total size arrives.
@@ -361,6 +368,7 @@ final class YtDlpModel {
         speedText = nil
         etaText = nil
         errorMessage = nil
+        wasCancelled = false
         // yt-dlp's own default format selection (both nil) resolves to
         // bestvideo+bestaudio, i.e. video first — so the first destination
         // is audio only when the caller explicitly picked audio with no video.
@@ -392,7 +400,10 @@ final class YtDlpModel {
                 try await runWithProgress(args: args)
                 downloadProgress = 1.0
             } catch YtDlpError.cancelled {
-                // User-initiated; leave the UI clean rather than showing an error.
+                // User-initiated; leave the UI clean rather than showing an
+                // error. wasCancelled is how callers still tell this apart
+                // from a genuine completion, since errorMessage alone can't.
+                wasCancelled = true
             } catch {
                 errorMessage = error.diagnosticDescription
             }

@@ -105,7 +105,10 @@ struct ContentView: View {
         .onChange(of: model.isDownloading) { wasDownloading, isDownloading in
             guard wasDownloading, !isDownloading else { return }
             defer { downloadStartedAt = nil }
-            guard model.errorMessage == nil else { return }
+            // A cancelled download also leaves errorMessage nil (see
+            // YtDlpModel.download's cancellation branch), so that check
+            // alone can't tell a genuine completion apart from a cancel.
+            guard model.errorMessage == nil, !model.wasCancelled else { return }
             if let downloadStartedAt {
                 lastCompletedElapsed = Date().timeIntervalSince(downloadStartedAt)
             }
@@ -133,8 +136,15 @@ struct ContentView: View {
                 .onSubmit(fetchNow)
         case .fetching:
             URLField(text: $urlString, tone: .focused, trailing: .fetching)
-        case .ready, .downloading, .complete:
+        case .ready, .complete:
             URLField(text: $urlString, tone: .focused, trailing: .none)
+        case .downloading:
+            // Disabled rather than just visually focused: editing the URL
+            // mid-download used to blank the progress view without
+            // actually stopping the download running underneath it.
+            URLField(text: $urlString, tone: .focused, trailing: .none)
+                .disabled(true)
+                .opacity(0.6)
         case .error:
             URLField(text: $urlString, tone: .error, trailing: .none)
                 .onSubmit(fetchNow)
@@ -362,11 +372,17 @@ struct ContentView: View {
     /// Clears the previously fetched video and its dependent selections, so
     /// stale state from one video can't be sent alongside a different URL.
     /// Also cancels an in-flight fetch, since it's for a URL the field no
-    /// longer shows.
+    /// longer shows, and drops out of the complete/error screens back to
+    /// the normal fetch flow — entering a new URL anywhere, including on
+    /// the completed-download screen, should behave the same way: fetch
+    /// the new video and let the user download it, not get stuck showing
+    /// the previous one.
     private func resetFetchedState() {
         if model.isLoading { model.cancel() }
         model.videoInfo = nil
         model.errorMessage = nil
+        showingComplete = false
+        lastCompletedElapsed = nil
         selectedVideoFormatID = nil
         selectedAudioFormatID = nil
         lastVideoFormatID = nil
