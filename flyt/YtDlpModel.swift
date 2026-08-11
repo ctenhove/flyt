@@ -563,13 +563,27 @@ final class YtDlpModel {
             let isVideoTrack = destinationCount == 1 && expectsVideoTrack
             downloadPhase = isVideoTrack ? .downloadingVideo : .downloadingAudio
             downloadProgress = 0.0
+            // Clear the previous stream's stats rather than leaving them
+            // to show alongside the new stream's phase/progress until its
+            // own first progress line arrives.
+            downloadedSizeText = nil
+            totalSizeText = nil
+            speedText = nil
+            etaText = nil
         }
 
         if line.contains("[Merger]") {
             downloadPhase = .merging
         }
 
-        if let percent = Self.parseProgress(from: line) {
+        // Parsed once and reused below rather than re-read from
+        // `downloadProgress`: that stored value can be stale (left over
+        // from a previous line, or from the previous stream if this line
+        // has size/speed/ETA but, for whatever reason, no percentage of
+        // its own), which would make `downloadedSizeText` show a wrong
+        // "X of Y" pairing rather than staying nil until real data exists.
+        let percent = Self.parseProgress(from: line)
+        if let percent {
             downloadProgress = percent
         }
 
@@ -577,11 +591,11 @@ final class YtDlpModel {
             totalSizeText = detail.total
             speedText = detail.speed
             etaText = detail.eta
-            // yt-dlp only prints the *total* size per progress line, not how
-            // much has landed so far, so derive that from the percentage
-            // already parsed above rather than a separate field.
-            if let totalBytes = Self.parseByteCount(detail.total) {
-                let downloadedBytes = Int64(Double(totalBytes) * downloadProgress)
+            // yt-dlp only prints the *total* size per progress line, not
+            // how much has landed so far, so derive that from this same
+            // line's own percentage — only when this line actually has one.
+            if let percent, let totalBytes = Self.parseByteCount(detail.total) {
+                let downloadedBytes = Int64(Double(totalBytes) * percent)
                 downloadedSizeText = ByteCountFormatter.string(fromByteCount: downloadedBytes, countStyle: .file)
             }
         }
@@ -592,10 +606,13 @@ final class YtDlpModel {
     }
 
     /// Extracts a download percentage from a line of yt-dlp output
-    /// (e.g. "[download]  42.5% of ...") and returns it as a fraction
-    /// in 0.0...1.0, or nil if the line contains no percentage.
+    /// (e.g. "[download]  42.5% of ..." or "[download] 100% of ...") and
+    /// returns it as a fraction in 0.0...1.0, or nil if the line contains
+    /// no percentage. The fractional part is optional — yt-dlp always
+    /// prints one in practice, but a whole-number percent (e.g. a bare
+    /// "3%" or "100%") shouldn't fail to parse just because it lacks one.
     private nonisolated static func parseProgress(from line: String) -> Double? {
-        guard let match = line.firstMatch(of: /(\d+\.\d+)%/) else { return nil }
+        guard let match = line.firstMatch(of: /(\d+(?:\.\d+)?)%/) else { return nil }
         return Double(match.1).map { $0 / 100.0 }
     }
 
