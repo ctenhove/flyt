@@ -563,11 +563,15 @@ final class YtDlpModel {
 
     /// Interprets one complete line of yt-dlp stdout and updates observable state.
     private func processOutputLine(_ line: String) {
+        // Parsed once and reused below (both in the Destination-line check
+        // and to update lastDownloadedFile) rather than matched twice per line.
+        let dest = Self.parseDestination(from: line)
+
         // Each stream yt-dlp downloads starts with its own Destination line.
         // A retried/resumed fragment can reprint the same line for the file
         // already in progress, so only a *new* path counts as a new stream.
         if line.contains("[download] Destination:"),
-           let dest = Self.parseDestination(from: line),
+           let dest,
            !seenDestinations.contains(dest) {
             seenDestinations.insert(dest)
             destinationCount += 1
@@ -611,7 +615,7 @@ final class YtDlpModel {
             }
         }
 
-        if let dest = Self.parseDestination(from: line) {
+        if let dest {
             lastDownloadedFile = URL(fileURLWithPath: dest)
         }
     }

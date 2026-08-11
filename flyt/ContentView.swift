@@ -51,6 +51,13 @@ struct ContentView: View {
     /// would be wasted work, since the list only actually changes once per fetch.
     @State private var videoFormats: [VideoFormat] = []
     @State private var audioFormats: [VideoFormat] = []
+    /// Derived from videoFormats/audioFormats and cached alongside them for
+    /// the same reason: filtering/grouping/sorting them fresh on every body
+    /// evaluation would repeat that work many times a second while
+    /// downloadProgress updates, even though the options themselves only
+    /// change once per fetch.
+    @State private var resolutionOptions: [FormatSelection.ResolutionOption] = []
+    @State private var audioOptions: [FormatSelection.AudioOption] = []
 
     /// Debounces auto-fetch so a pasted/dropped link fetches automatically
     /// (README §4) without spawning a yt-dlp process on every keystroke
@@ -84,6 +91,8 @@ struct ContentView: View {
             guard let info else { return }
             videoFormats = Self.sortedFormats(info.formats) { $0.hasVideo }
             audioFormats = Self.sortedFormats(info.formats) { $0.isAudioOnly }
+            resolutionOptions = FormatSelection.resolutionOptions(in: videoFormats)
+            audioOptions = FormatSelection.audioOptions(in: audioFormats)
             if selectedVideoFormatID == nil {
                 selectedVideoFormatID = videoFormats.first?.id
             }
@@ -249,14 +258,6 @@ struct ContentView: View {
         formats.filter(predicate).sorted { $0.qualityRank > $1.qualityRank }
     }
 
-    private var resolutionOptions: [FormatSelection.ResolutionOption] {
-        FormatSelection.resolutionOptions(in: videoFormats)
-    }
-
-    private var audioOptions: [FormatSelection.AudioOption] {
-        FormatSelection.audioOptions(in: audioFormats)
-    }
-
     private var selectedVideoFormat: VideoFormat? {
         videoFormats.first { $0.id == selectedVideoFormatID }
     }
@@ -390,6 +391,8 @@ struct ContentView: View {
         filenameIsCustom = false
         videoFormats = []
         audioFormats = []
+        resolutionOptions = []
+        audioOptions = []
         optionsExpanded = false
         audioOnly = false
     }
