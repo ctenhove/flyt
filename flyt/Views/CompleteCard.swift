@@ -14,7 +14,11 @@ struct CompleteCard: View {
     var savedFileURL: URL
     var thumbnailURLString: String?
     var resolutionLabel: String?
-    var containerLabel: String
+    /// nil when no merge happened (audio-only, or video with no audio
+    /// track) — the container picker only determines anything when yt-dlp
+    /// actually muxes two streams together; showing it otherwise would
+    /// claim a container the saved file was never written into.
+    var containerLabel: String?
     var audioLabel: String?
     var destinationFolder: URL
     var savedSizeBytes: Int64?
@@ -73,7 +77,7 @@ struct CompleteCard: View {
     private var detailLine: String {
         var parts: [String] = []
         if let resolutionLabel { parts.append(resolutionLabel) }
-        parts.append(containerLabel.uppercased())
+        if let containerLabel { parts.append(containerLabel.uppercased()) }
         if let audioLabel { parts.append(audioLabel.uppercased()) }
         parts.append(FlytFormat.abbreviatedPath(destinationFolder))
         return parts.joined(separator: " · ")

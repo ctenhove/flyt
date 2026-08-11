@@ -211,7 +211,7 @@ struct ContentView: View {
                     savedFileURL: file,
                     thumbnailURLString: model.videoInfo?.thumbnail,
                     resolutionLabel: resolutionSummaryLabel,
-                    containerLabel: selectedOutputContainer.label,
+                    containerLabel: willMerge ? selectedOutputContainer.label : nil,
                     audioLabel: selectedAudioFormat?.ext,
                     destinationFolder: destinationFolder,
                     savedSizeBytes: estimatedSizeBytes,
