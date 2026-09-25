@@ -35,13 +35,14 @@ enum FormatSelection {
     }
 
     /// Distinct resolutions actually offered, highest first, each mapped to
-    /// its best (highest `qualityRank`) format.
+    /// its best (highest `qualityRank`, ties broken toward reliable
+    /// progress reporting) format.
     static func resolutionOptions(in formats: [VideoFormat]) -> [ResolutionOption] {
         let videoFormats = formats.filter { $0.hasVideo && $0.height != nil }
         let byHeight = Dictionary(grouping: videoFormats) { $0.height! }
         return byHeight
             .compactMap { height, formats in
-                formats.max { $0.qualityRank < $1.qualityRank }.map { ResolutionOption(height: height, format: $0) }
+                formats.max(by: byQualityThenReliability).map { ResolutionOption(height: height, format: $0) }
             }
             .sorted { $0.height > $1.height }
     }
@@ -55,9 +56,19 @@ enum FormatSelection {
         let byExt = Dictionary(grouping: audioFormats) { $0.ext }
         return byExt
             .compactMap { ext, formats in
-                formats.max { $0.qualityRank < $1.qualityRank }.map { AudioOption(ext: ext, format: $0) }
+                formats.max(by: byQualityThenReliability).map { AudioOption(ext: ext, format: $0) }
             }
             .sorted { $0.format.qualityRank > $1.format.qualityRank }
+    }
+
+    /// Orders two formats by quality first; when a video/audio ladder has
+    /// several formats tied on `qualityRank` (a common case: the same
+    /// resolution/bitrate offered over both plain HTTP and HLS), prefers
+    /// the one with reliable progress reporting so the download UI doesn't
+    /// show a jumpy size estimate for no quality benefit.
+    private static func byQualityThenReliability(_ a: VideoFormat, _ b: VideoFormat) -> Bool {
+        if a.qualityRank != b.qualityRank { return a.qualityRank < b.qualityRank }
+        return !a.hasReliableProgress && b.hasReliableProgress
     }
 
     /// Best-effort combined download size for the currently selected

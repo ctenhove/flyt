@@ -77,6 +77,11 @@ struct VideoInfo: Codable, Equatable {
     let viewCount: Int?
     /// Every format yt-dlp offers for this video, worst to best as yt-dlp orders them.
     let formats: [VideoFormat]
+    /// Manually-authored subtitle tracks, keyed by yt-dlp language code (e.g. "en", "es").
+    let subtitles: [String: [SubtitleTrackInfo]]?
+    /// Auto-generated caption tracks, keyed by language code. Sites like
+    /// YouTube can offer dozens of auto-translated languages here.
+    let automaticCaptions: [String: [SubtitleTrackInfo]]?
 
     enum CodingKeys: String, CodingKey {
         case title
@@ -85,7 +90,18 @@ struct VideoInfo: Codable, Equatable {
         case channel
         case viewCount = "view_count"
         case formats
+        case subtitles
+        case automaticCaptions = "automatic_captions"
     }
+}
+
+/// One available subtitle track for a language, decoded from an entry in
+/// yt-dlp's "subtitles"/"automatic_captions" maps. yt-dlp lists one entry
+/// per sub-format (vtt, srv3, ...) for the same language; only `name` is
+/// used here (for a human-readable label when yt-dlp provides one) since
+/// `--sub-langs`/`--sub-format` select by language, not by individual entry.
+struct SubtitleTrackInfo: Codable, Hashable {
+    let name: String?
 }
 
 /// One downloadable format of a video, decoded from an entry in yt-dlp's
@@ -110,6 +126,10 @@ struct VideoFormat: Codable, Identifiable, Hashable {
     let tbr: Double?
     let filesize: Int64?
     let filesizeApprox: Int64?
+    /// yt-dlp's download protocol for this format, e.g. "https" or
+    /// "m3u8_native" (HLS). Used only to break quality ties in favor of a
+    /// format whose progress reporting is reliable — see `hasReliableProgress`.
+    let formatProtocol: String?
 
     var id: String { formatId }
 
@@ -125,6 +145,7 @@ struct VideoFormat: Codable, Identifiable, Hashable {
         case tbr
         case filesize
         case filesizeApprox = "filesize_approx"
+        case formatProtocol = "protocol"
     }
 
     /// True if this format carries a video track (yt-dlp uses vcodec "none" for audio-only formats).
@@ -141,6 +162,17 @@ struct VideoFormat: Codable, Identifiable, Hashable {
     /// True if this format has no separate audio track (common for high-res DASH video streams).
     var isVideoOnly: Bool {
         hasVideo && (acodec == nil || acodec == "none")
+    }
+
+    /// False for streaming-manifest protocols (HLS/DASH segments), whose
+    /// per-fragment progress reporting is far less reliable than a plain
+    /// HTTP download — yt-dlp's own size estimate for these swings wildly
+    /// fragment to fragment, and it prints a literal "ETA Unknown" for long
+    /// stretches even mid-download. Same underlying quality, worse UI, so
+    /// this only matters as a tie-break — see `FormatSelection`.
+    var hasReliableProgress: Bool {
+        guard let formatProtocol else { return true }
+        return !formatProtocol.contains("m3u8") && !formatProtocol.contains("dash")
     }
 
     /// A rough quality score for sorting/defaulting a picker to "best first".
@@ -348,7 +380,11 @@ final class YtDlpModel {
     /// controls the container yt-dlp merges into; it's ignored if no merge
     /// is needed (e.g. only one track was selected). `fileName` is used
     /// without its extension — yt-dlp appends the real one; an empty
-    /// `fileName` falls back to the video's title.
+    /// `fileName` falls back to the video's title. Pass `subtitleLanguage`
+    /// to also fetch subtitles for that language — `nil` skips subtitles
+    /// entirely. `embedSubtitles` muxes them into the video file instead of
+    /// writing a sidecar file alongside it; it's ignored when
+    /// `subtitleLanguage` is `nil`.
     ///
     /// Bails out if a fetch or download is already in flight — see the note
     /// on `runVersion()`.
@@ -358,7 +394,9 @@ final class YtDlpModel {
         audioFormatId: String?,
         outputContainer: OutputContainer,
         destinationFolder: URL,
-        fileName: String
+        fileName: String,
+        subtitleLanguage: SubtitleSelection.LanguageOption?,
+        embedSubtitles: Bool
     ) {
         guard !isBusy else { return }
         isDownloading = true
@@ -392,6 +430,25 @@ final class YtDlpModel {
         let formatSelector = [videoFormatId, audioFormatId].compactMap { $0 }.joined(separator: "+")
         if !formatSelector.isEmpty {
             args += ["-f", formatSelector]
+        }
+        if let subtitleLanguage {
+            args += ["--sub-langs", subtitleLanguage.code]
+            if embedSubtitles {
+                // --embed-subs alone (without --write-subs/--write-auto-subs)
+                // already fetches whichever of manual/auto is available for
+                // --sub-langs, embeds it, and deletes the temp subtitle file
+                // once done. Adding --write-subs/--write-auto-subs here would
+                // make yt-dlp treat the file as explicitly requested and
+                // keep it as a sidecar alongside the embedded copy.
+                args += ["--embed-subs"]
+            } else {
+                // Without embedding, explicitly ask for the file yt-dlp
+                // should keep. Manually-authored and auto-generated tracks
+                // live under different flags; SubtitleSelection.languageOptions
+                // only labels a language auto-generated when no manual track
+                // for it exists, so exactly one of these is what's available.
+                args += [subtitleLanguage.isAutoGenerated ? "--write-auto-subs" : "--write-subs"]
+            }
         }
         args.append(urlString)
 
@@ -570,8 +627,13 @@ final class YtDlpModel {
         // Each stream yt-dlp downloads starts with its own Destination line.
         // A retried/resumed fragment can reprint the same line for the file
         // already in progress, so only a *new* path counts as a new stream.
+        // A requested subtitle file gets its own Destination line too,
+        // fetched before the real video/audio streams — without excluding
+        // it here it would count as stream #1 and mislabel the real video
+        // download as "downloadingAudio".
         if line.contains("[download] Destination:"),
            let dest,
+           !Self.isSubtitleDestination(dest),
            !seenDestinations.contains(dest) {
             seenDestinations.insert(dest)
             destinationCount += 1
@@ -615,9 +677,18 @@ final class YtDlpModel {
             }
         }
 
-        if let dest {
+        if let dest, !Self.isSubtitleDestination(dest) {
             lastDownloadedFile = URL(fileURLWithPath: dest)
         }
+    }
+
+    /// Subtitle sidecar extensions yt-dlp can write with `--write-subs`/
+    /// `--write-auto-subs`, so their Destination lines can be told apart
+    /// from the video/audio streams `processOutputLine` tracks.
+    private static let subtitleExtensions: Set<String> = ["vtt", "srt", "ass", "ttml", "srv1", "srv2", "srv3", "json3"]
+
+    private nonisolated static func isSubtitleDestination(_ path: String) -> Bool {
+        subtitleExtensions.contains(URL(fileURLWithPath: path).pathExtension.lowercased())
     }
 
     /// Extracts a download percentage from a line of yt-dlp output
@@ -636,9 +707,12 @@ final class YtDlpModel {
     /// 4.10MiB/s ETA 00:12" — already human-readable, so passed through as-is
     /// rather than re-parsed into raw numbers (`parseByteCount` below only
     /// exists to derive the downloaded-so-far figure, which yt-dlp doesn't
-    /// print directly).
+    /// print directly). The ETA group requires a leading digit so a literal
+    /// "ETA Unknown" — which HLS/DASH streams print for long stretches —
+    /// fails to match here, same as the already-numeric-only speed group,
+    /// rather than surfacing a useless "Unknown left" in the UI.
     private nonisolated static func parseProgressDetail(from line: String) -> (total: String, speed: String, eta: String)? {
-        guard let match = line.firstMatch(of: /of\s+~?([\d.]+\w+)\s+at\s+([\d.]+\w+\/s)\s+ETA\s+(\S+)/) else { return nil }
+        guard let match = line.firstMatch(of: /of\s+~?([\d.]+\w+)\s+at\s+([\d.]+\w+\/s)\s+ETA\s+(\d\S*)/) else { return nil }
         return (total: String(match.1), speed: String(match.2), eta: String(match.3))
     }
 

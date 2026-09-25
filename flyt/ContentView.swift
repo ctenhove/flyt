@@ -34,6 +34,13 @@ struct ContentView: View {
     @State private var audioOnly = false
     /// The video format to restore when "Audio only" is turned back off.
     @State private var lastVideoFormatID: String?
+    @State private var subtitlesEnabled = false
+    @State private var selectedSubtitleLanguageCode: String?
+    /// Mux subtitles into the video file instead of writing a sidecar file.
+    /// Defaults on: embedding is what most people expect from "download
+    /// subtitles" — a loose .srt/.vtt file alongside the video is the
+    /// opt-out, not the default.
+    @State private var embedSubtitles = true
 
     @State private var showingComplete = false
     @State private var downloadStartedAt: Date?
@@ -58,6 +65,7 @@ struct ContentView: View {
     /// change once per fetch.
     @State private var resolutionOptions: [FormatSelection.ResolutionOption] = []
     @State private var audioOptions: [FormatSelection.AudioOption] = []
+    @State private var subtitleLanguageOptions: [SubtitleSelection.LanguageOption] = []
 
     /// Debounces auto-fetch so a pasted/dropped link fetches automatically
     /// (README §4) without spawning a yt-dlp process on every keystroke
@@ -93,17 +101,28 @@ struct ContentView: View {
             audioFormats = Self.sortedFormats(info.formats) { $0.isAudioOnly }
             resolutionOptions = FormatSelection.resolutionOptions(in: videoFormats)
             audioOptions = FormatSelection.audioOptions(in: audioFormats)
+            subtitleLanguageOptions = SubtitleSelection.languageOptions(
+                subtitles: info.subtitles,
+                automaticCaptions: info.automaticCaptions
+            )
             if selectedVideoFormatID == nil {
                 selectedVideoFormatID = videoFormats.first?.id
             }
             if selectedAudioFormatID == nil {
                 selectedAudioFormatID = audioFormats.first?.id
             }
+            if selectedSubtitleLanguageCode == nil {
+                selectedSubtitleLanguageCode = subtitleLanguageOptions.first?.code
+            }
             if !filenameIsCustom {
                 filename = FilenamePolicy.sanitize(info.title)
             }
         }
         .onChange(of: audioOnly) { _, isOn in
+            // embedSubtitles is left as-is while audioOnly is on: the toggle
+            // is hidden (there's no video track to embed into) and
+            // startDownload() already gates on `&& !audioOnly`, so its
+            // stored value only matters again once a video track returns.
             if isOn {
                 lastVideoFormatID = selectedVideoFormatID
                 selectedVideoFormatID = nil
@@ -187,6 +206,10 @@ struct ContentView: View {
                         audioOptions: audioOptions,
                         selectedAudioExt: audioExtBinding,
                         audioOnly: $audioOnly,
+                        subtitleLanguageOptions: subtitleLanguageOptions,
+                        subtitlesEnabled: $subtitlesEnabled,
+                        selectedSubtitleLanguageCode: $selectedSubtitleLanguageCode,
+                        embedSubtitles: $embedSubtitles,
                         onCollapse: { optionsExpanded = false }
                     )
                 } else {
@@ -253,9 +276,18 @@ struct ContentView: View {
 
     // MARK: Derived selection state
 
-    /// Filters and sorts `formats` best-quality-first.
+    /// Filters and sorts `formats` best-quality-first. When two formats tie
+    /// on quality (a common case: the same resolution/bitrate offered over
+    /// both plain HTTP and HLS), prefers the one with reliable progress
+    /// reporting — see `VideoFormat.hasReliableProgress` — so the default
+    /// pick (the array's first element) doesn't default into a format whose
+    /// download UI shows a jumpy size estimate for no quality benefit.
     private static func sortedFormats(_ formats: [VideoFormat], where predicate: (VideoFormat) -> Bool) -> [VideoFormat] {
-        formats.filter(predicate).sorted { $0.qualityRank > $1.qualityRank }
+        formats.filter(predicate).sorted {
+            $0.qualityRank != $1.qualityRank
+                ? $0.qualityRank > $1.qualityRank
+                : $0.hasReliableProgress && !$1.hasReliableProgress
+        }
     }
 
     private var selectedVideoFormat: VideoFormat? {
@@ -264,6 +296,11 @@ struct ContentView: View {
 
     private var selectedAudioFormat: VideoFormat? {
         audioFormats.first { $0.id == selectedAudioFormatID }
+    }
+
+    private var selectedSubtitleLanguage: SubtitleSelection.LanguageOption? {
+        guard subtitlesEnabled else { return nil }
+        return subtitleLanguageOptions.first { $0.code == selectedSubtitleLanguageCode }
     }
 
     /// True when both a video and an audio track are selected, meaning
@@ -304,6 +341,7 @@ struct ContentView: View {
         if let resolutionSummaryLabel { segments.append(resolutionSummaryLabel) }
         if selectedVideoFormatID != nil { segments.append(selectedOutputContainer.label.uppercased()) }
         if let ext = selectedAudioFormat?.ext { segments.append(ext.uppercased()) }
+        if let selectedSubtitleLanguage { segments.append("\(selectedSubtitleLanguage.code.uppercased()) CC") }
         return segments
     }
 
@@ -395,6 +433,10 @@ struct ContentView: View {
         audioOptions = []
         optionsExpanded = false
         audioOnly = false
+        subtitleLanguageOptions = []
+        subtitlesEnabled = false
+        selectedSubtitleLanguageCode = nil
+        embedSubtitles = true
     }
 
     private func resetFilenameToTitle() {
@@ -468,7 +510,9 @@ struct ContentView: View {
             audioFormatId: selectedAudioFormatID,
             outputContainer: selectedOutputContainer,
             destinationFolder: destinationFolder,
-            fileName: uniqueBase
+            fileName: uniqueBase,
+            subtitleLanguage: selectedSubtitleLanguage,
+            embedSubtitles: embedSubtitles && !audioOnly
         )
     }
 
