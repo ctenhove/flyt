@@ -14,6 +14,11 @@ enum DownloadPhase: Equatable {
     case downloadingVideo
     case downloadingAudio
     case merging
+    /// Cutting one of several requested time ranges. yt-dlp reports no
+    /// incremental progress for this step (it's a keyframe-accurate ffmpeg
+    /// cut, not a plain download), so this is shown as an indeterminate
+    /// spinner rather than a percentage — see `.merging`.
+    case trimmingSection(index: Int, total: Int)
 
     var label: String {
         switch self {
@@ -21,6 +26,8 @@ enum DownloadPhase: Equatable {
         case .downloadingVideo: return "Downloading video…"
         case .downloadingAudio: return "Downloading audio…"
         case .merging: return "Merging…"
+        case .trimmingSection(let index, let total):
+            return total > 1 ? "Trimming section \(index) of \(total)…" : "Trimming…"
         }
     }
 }
@@ -263,6 +270,17 @@ final class YtDlpModel {
     /// Whether the current download includes a video track, so the first
     /// "Destination:" line is labeled correctly for audio-only downloads.
     private var expectsVideoTrack = true
+    /// Number of time-range sections requested this download; 0 means
+    /// trimming isn't active and `processOutputLine` uses the normal
+    /// video/audio-pair tracking above instead. A sectioned download's
+    /// Destination line represents one whole cut section rather than one
+    /// video/audio track, so it needs its own counter.
+    private var expectedSectionCount = 0
+    private var sectionsCompleted = 0
+    /// Each section's finished file, in the order yt-dlp reports them —
+    /// used to concatenate them into one file when the caller asked to
+    /// merge sections.
+    private var sectionOutputFiles: [URL] = []
     private let dependencyManager: DependencyManager
 
     /// The yt-dlp process currently running, if any, so `cancel()` can
@@ -348,7 +366,12 @@ final class YtDlpModel {
     /// controls the container yt-dlp merges into; it's ignored if no merge
     /// is needed (e.g. only one track was selected). `fileName` is used
     /// without its extension — yt-dlp appends the real one; an empty
-    /// `fileName` falls back to the video's title.
+    /// `fileName` falls back to the video's title. `timeRanges` trims the
+    /// download to those spans (each becomes a `--download-sections`);
+    /// empty downloads the full video, unchanged from before this param
+    /// existed. With more than one range, `mergeSections` chooses between
+    /// one output file per range (each named with its start/end) or
+    /// concatenating them into a single file afterward.
     ///
     /// Bails out if a fetch or download is already in flight — see the note
     /// on `runVersion()`.
@@ -358,7 +381,9 @@ final class YtDlpModel {
         audioFormatId: String?,
         outputContainer: OutputContainer,
         destinationFolder: URL,
-        fileName: String
+        fileName: String,
+        timeRanges: [VideoTimeRange] = [],
+        mergeSections: Bool = false
     ) {
         guard !isBusy else { return }
         isDownloading = true
@@ -373,11 +398,23 @@ final class YtDlpModel {
         // bestvideo+bestaudio, i.e. video first — so the first destination
         // is audio only when the caller explicitly picked audio with no video.
         expectsVideoTrack = !(videoFormatId == nil && audioFormatId != nil)
-        downloadPhase = expectsVideoTrack ? .downloadingVideo : .downloadingAudio
         destinationCount = 0
         seenDestinations = []
+        expectedSectionCount = timeRanges.count
+        sectionsCompleted = 0
+        sectionOutputFiles = []
+        downloadPhase = expectedSectionCount > 0
+            ? .trimmingSection(index: 1, total: expectedSectionCount)
+            : (expectsVideoTrack ? .downloadingVideo : .downloadingAudio)
 
         let nameComponent = fileName.isEmpty ? "%(title)s" : Self.sanitizedFileNameComponent(fileName)
+        // Requesting more than one time range without a per-range output
+        // template would have every range write to the same final path —
+        // yt-dlp then silently skips every range after the first as
+        // "already downloaded". The suffix is yt-dlp's own template fields,
+        // not something this code resolves itself; the actual paths
+        // produced are read back from its Destination lines below.
+        let sectionSuffix = timeRanges.count > 1 ? " [%(section_start)s-%(section_end)s]" : ""
         var args = [
             "--newline",
             // Force single-video mode: without this, a playlist URL
@@ -387,17 +424,32 @@ final class YtDlpModel {
             "--no-playlist",
             "--ffmpeg-location", dependencyManager.ffmpegURL.path,
             "--merge-output-format", outputContainer.rawValue,
-            "-o", "\(destinationFolder.path)/\(nameComponent).%(ext)s"
+            "-o", "\(destinationFolder.path)/\(nameComponent)\(sectionSuffix).%(ext)s"
         ]
         let formatSelector = [videoFormatId, audioFormatId].compactMap { $0 }.joined(separator: "+")
         if !formatSelector.isEmpty {
             args += ["-f", formatSelector]
+        }
+        for range in timeRanges {
+            args += ["--download-sections", "*\(Self.sectionTimestamp(range.start))-\(Self.sectionTimestamp(range.end))"]
+        }
+        if !timeRanges.isEmpty {
+            args += ["--force-keyframes-at-cuts"]
         }
         args.append(urlString)
 
         Task {
             do {
                 try await runWithProgress(args: args)
+                if mergeSections, sectionOutputFiles.count > 1 {
+                    downloadPhase = .merging
+                    let mergedFileName = fileName.isEmpty ? "download" : FilenamePolicy.sanitize(fileName)
+                    lastDownloadedFile = try await concatenateSections(
+                        sectionOutputFiles,
+                        finalFileName: mergedFileName,
+                        into: destinationFolder
+                    )
+                }
                 downloadProgress = 1.0
             } catch YtDlpError.cancelled {
                 // User-initiated; leave the UI clean rather than showing an
@@ -427,6 +479,62 @@ final class YtDlpModel {
     /// introduced by that pass (there isn't one) couldn't slip through unescaped.
     private nonisolated static func sanitizedFileNameComponent(_ name: String) -> String {
         FilenamePolicy.sanitize(name).replacingOccurrences(of: "%", with: "%%")
+    }
+
+    /// Formats seconds for yt-dlp's `--download-sections "*start-end"`
+    /// syntax, which accepts plain seconds (fractional or not).
+    private nonisolated static func sectionTimestamp(_ seconds: Double) -> String {
+        String(format: "%.2f", seconds)
+    }
+
+    /// Concatenates already-downloaded section files into one final file
+    /// via ffmpeg's concat demuxer (stream copy, no re-encode — every
+    /// section was already cut into the same codec/container by this same
+    /// download). Deletes the section files only once the merge succeeds,
+    /// so a failure still leaves the individual clips behind instead of
+    /// losing them.
+    @concurrent
+    private func concatenateSections(_ files: [URL], finalFileName: String, into folder: URL) async throws -> URL {
+        let ext = files.first?.pathExtension ?? "mp4"
+        let uniqueName = FilenamePolicy.uniqueFilename(base: finalFileName, in: folder)
+        let finalURL = folder.appendingPathComponent("\(uniqueName).\(ext)")
+
+        let listURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).txt")
+        // ffmpeg's concat demuxer format: one `file '<path>'` per line: a
+        // literal single quote in a path has to be closed, escaped, and
+        // reopened (concat's own escaping rule), even though our own
+        // filenames won't produce one in practice.
+        let listContents = files
+            .map { "file '\($0.path.replacingOccurrences(of: "'", with: "'\\''"))'" }
+            .joined(separator: "\n")
+        try listContents.write(to: listURL, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: listURL) }
+
+        let process = Process()
+        process.executableURL = dependencyManager.ffmpegURL
+        process.arguments = ["-y", "-f", "concat", "-safe", "0", "-i", listURL.path, "-c", "copy", finalURL.path]
+        let errorPipe = Pipe()
+        process.standardOutput = Pipe()
+        process.standardError = errorPipe
+        try process.run()
+        // Tracked the same way runProcess tracks the yt-dlp process, so
+        // cancel() can still stop something while this step is running.
+        activeProcess = process
+        defer { activeProcess = nil }
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0 else {
+            if process.terminationReason == .uncaughtSignal, process.terminationStatus == SIGTERM {
+                throw YtDlpError.cancelled
+            }
+            let detail = String(data: errorPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)
+            throw YtDlpError.processFailed(detail?.isEmpty == false ? detail! : "Merging sections failed.")
+        }
+
+        for file in files {
+            try? FileManager.default.removeItem(at: file)
+        }
+        return finalURL
     }
 
     // MARK: Running yt-dlp
@@ -570,26 +678,43 @@ final class YtDlpModel {
         // Each stream yt-dlp downloads starts with its own Destination line.
         // A retried/resumed fragment can reprint the same line for the file
         // already in progress, so only a *new* path counts as a new stream.
-        if line.contains("[download] Destination:"),
-           let dest,
-           !seenDestinations.contains(dest) {
+        // A sectioned (trimmed) download reports one Destination line per
+        // *section* rather than per video/audio track — yt-dlp cuts each
+        // range with a direct ffmpeg pipeline that never prints the usual
+        // separate video-then-audio Destination pair — so it needs its own
+        // counter instead of the video/audio-pair logic below.
+        if line.contains("[download] Destination:"), let dest, !seenDestinations.contains(dest) {
             seenDestinations.insert(dest)
-            destinationCount += 1
-            let isVideoTrack = destinationCount == 1 && expectsVideoTrack
-            downloadPhase = isVideoTrack ? .downloadingVideo : .downloadingAudio
-            downloadProgress = 0.0
-            // Clear the previous stream's stats rather than leaving them
-            // to show alongside the new stream's phase/progress until its
-            // own first progress line arrives.
-            downloadedSizeText = nil
-            totalSizeText = nil
-            speedText = nil
-            etaText = nil
+            if expectedSectionCount > 0 {
+                sectionsCompleted += 1
+                sectionOutputFiles.append(URL(fileURLWithPath: dest))
+                downloadPhase = .trimmingSection(index: min(sectionsCompleted, expectedSectionCount), total: expectedSectionCount)
+                lastDownloadedFile = URL(fileURLWithPath: dest)
+            } else {
+                destinationCount += 1
+                let isVideoTrack = destinationCount == 1 && expectsVideoTrack
+                downloadPhase = isVideoTrack ? .downloadingVideo : .downloadingAudio
+                downloadProgress = 0.0
+                // Clear the previous stream's stats rather than leaving them
+                // to show alongside the new stream's phase/progress until its
+                // own first progress line arrives.
+                downloadedSizeText = nil
+                totalSizeText = nil
+                speedText = nil
+                etaText = nil
+            }
         }
 
         if line.contains("[Merger]") {
             downloadPhase = .merging
         }
+
+        // A sectioned download's own progress lines (a single 0%→100%
+        // per section, no incremental updates) aren't worth surfacing as a
+        // percentage — the UI shows an indeterminate spinner for
+        // `.trimmingSection` instead — and `lastDownloadedFile` is already
+        // tracked per-section above.
+        guard expectedSectionCount == 0 else { return }
 
         // Parsed once and reused below rather than re-read from
         // `downloadProgress`: that stored value can be stale (left over

@@ -39,9 +39,12 @@ struct DownloadingProgress: View {
                         .lineLimit(1)
                         .truncationMode(.tail)
 
-                    if phase == .merging {
-                        mergingRow
-                    } else {
+                    switch phase {
+                    case .merging:
+                        indeterminateRow(label: "Merging…")
+                    case .trimmingSection:
+                        indeterminateRow(label: phase.label)
+                    default:
                         ProgressView(value: progress)
                             .tint(.flytSky)
                             .animation(.linear(duration: 0.25), value: progress)
@@ -67,10 +70,13 @@ struct DownloadingProgress: View {
         }
     }
 
-    private var mergingRow: some View {
+    /// A spinner + label for phases yt-dlp reports no incremental progress
+    /// for (merging, trimming a section) — a percentage bar would have
+    /// nothing real to show.
+    private func indeterminateRow(label: String) -> some View {
         HStack(spacing: 8) {
             ProgressView().controlSize(.small)
-            Text("Merging…")
+            Text(label)
                 .flytStyle(.micro)
         }
     }

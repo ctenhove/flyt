@@ -8,9 +8,9 @@
 import SwiftUI
 
 /// The expanded options card (README §3.5): filename, resolution chips,
-/// video-container / audio-track segmented controls, and the "Audio only"
-/// toggle. "Embed thumbnail & chapters" and "Download subtitles" aren't
-/// here — those need yt-dlp flags this pass doesn't wire up.
+/// video-container / audio-track segmented controls, trim-to-section(s),
+/// and the "Audio only" toggle. "Embed thumbnail & chapters" and "Download
+/// subtitles" aren't here — those need yt-dlp flags this pass doesn't wire up.
 struct OptionsCard: View {
     @Binding var filename: String
     var fileExtension: String
@@ -26,6 +26,13 @@ struct OptionsCard: View {
     @Binding var selectedAudioExt: String?
 
     @Binding var audioOnly: Bool
+
+    /// nil (e.g. a live stream with no known length) hides trimming
+    /// entirely — there's no duration to bound the range picker with.
+    var duration: Double?
+    @Binding var trimEnabled: Bool
+    @Binding var timeRanges: [VideoTimeRange]
+    @Binding var mergeSections: Bool
 
     var onCollapse: () -> Void
 
@@ -67,6 +74,14 @@ struct OptionsCard: View {
                 .tint(.flytSky)
                 .font(.system(size: 12.5, weight: .semibold))
                 .foregroundStyle(.flytBodyTextSecondary)
+
+            if let duration {
+                Rectangle()
+                    .fill(Color.flytDividerLight)
+                    .frame(height: 1)
+
+                trimSection(duration: duration)
+            }
         }
         .padding(14)
         .background(Color.flytField)
@@ -137,6 +152,20 @@ struct OptionsCard: View {
                 isSelected: { $0.ext == selectedAudioExt },
                 onSelect: { selectedAudioExt = $0.ext }
             )
+        }
+    }
+
+    private func trimSection(duration: Double) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Toggle("Trim to section(s)", isOn: $trimEnabled)
+                .toggleStyle(.switch)
+                .tint(.flytSky)
+                .font(.system(size: 12.5, weight: .semibold))
+                .foregroundStyle(.flytBodyTextSecondary)
+
+            if trimEnabled {
+                TimeRangeEditor(duration: duration, ranges: $timeRanges, mergeSections: $mergeSections)
+            }
         }
     }
 }

@@ -34,6 +34,11 @@ struct ContentView: View {
     @State private var audioOnly = false
     /// The video format to restore when "Audio only" is turned back off.
     @State private var lastVideoFormatID: String?
+    @State private var trimEnabled = false
+    @State private var timeRanges: [VideoTimeRange] = []
+    /// Only meaningful with more than one range: concatenate them into a
+    /// single output file instead of one file per range.
+    @State private var mergeSections = false
 
     @State private var showingComplete = false
     @State private var downloadStartedAt: Date?
@@ -111,6 +116,12 @@ struct ContentView: View {
                 selectedVideoFormatID = lastVideoFormatID ?? videoFormats.first?.id
             }
         }
+        .onChange(of: trimEnabled) { _, isOn in
+            guard isOn, timeRanges.isEmpty, let duration = model.videoInfo?.duration else { return }
+            var range = VideoTimeRange(start: 0, end: 30)
+            range.clamp(to: duration)
+            timeRanges = [range]
+        }
         .onChange(of: model.isDownloading) { wasDownloading, isDownloading in
             guard wasDownloading, !isDownloading else { return }
             defer { downloadStartedAt = nil }
@@ -187,6 +198,10 @@ struct ContentView: View {
                         audioOptions: audioOptions,
                         selectedAudioExt: audioExtBinding,
                         audioOnly: $audioOnly,
+                        duration: info.duration,
+                        trimEnabled: $trimEnabled,
+                        timeRanges: $timeRanges,
+                        mergeSections: $mergeSections,
                         onCollapse: { optionsExpanded = false }
                     )
                 } else {
@@ -282,7 +297,7 @@ struct ContentView: View {
         switch model.downloadPhase {
         case .downloadingVideo: return "Video"
         case .downloadingAudio: return "Audio"
-        case .idle, .merging: return nil
+        case .idle, .merging, .trimmingSection: return nil
         }
     }
 
@@ -304,15 +319,28 @@ struct ContentView: View {
         if let resolutionSummaryLabel { segments.append(resolutionSummaryLabel) }
         if selectedVideoFormatID != nil { segments.append(selectedOutputContainer.label.uppercased()) }
         if let ext = selectedAudioFormat?.ext { segments.append(ext.uppercased()) }
+        if trimEnabled, !timeRanges.isEmpty {
+            segments.append(timeRanges.count > 1 ? "\(timeRanges.count) CLIPS" : "TRIMMED")
+        }
         return segments
     }
 
+    /// The full-video estimate scaled down to the trimmed portion when
+    /// trimming is active: a known `filesize`/`filesizeApprox` is for the
+    /// *whole* stream, so without this a 10-second clip out of an hour-long
+    /// video would still show the full video's size.
     private var estimatedSizeBytes: Int64? {
-        FormatSelection.estimatedSizeBytes(
+        guard let fullEstimate = FormatSelection.estimatedSizeBytes(
             video: selectedVideoFormat,
             audio: selectedAudioFormat,
             durationSeconds: model.videoInfo?.duration
-        )
+        ) else { return nil }
+        guard trimEnabled, !timeRanges.isEmpty,
+              let fullDuration = model.videoInfo?.duration, fullDuration > 0 else {
+            return fullEstimate
+        }
+        let trimmedDuration = timeRanges.reduce(0) { $0 + max(0, $1.end - $1.start) }
+        return Int64(Double(fullEstimate) * (trimmedDuration / fullDuration))
     }
 
     private var estimatedSizeText: String? {
@@ -395,6 +423,9 @@ struct ContentView: View {
         audioOptions = []
         optionsExpanded = false
         audioOnly = false
+        trimEnabled = false
+        timeRanges = []
+        mergeSections = false
     }
 
     private func resetFilenameToTitle() {
@@ -468,7 +499,9 @@ struct ContentView: View {
             audioFormatId: selectedAudioFormatID,
             outputContainer: selectedOutputContainer,
             destinationFolder: destinationFolder,
-            fileName: uniqueBase
+            fileName: uniqueBase,
+            timeRanges: trimEnabled ? timeRanges : [],
+            mergeSections: mergeSections
         )
     }
 
