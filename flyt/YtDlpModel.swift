@@ -295,6 +295,10 @@ final class YtDlpModel {
     /// Whether the current download includes a video track, so the first
     /// "Destination:" line is labeled correctly for audio-only downloads.
     private var expectsVideoTrack = true
+    /// True while the stream most recently announced by a "Destination:"
+    /// line is a subtitle sidecar file rather than video/audio — see
+    /// `processOutputLine`.
+    private var isDownloadingSubtitle = false
     private let dependencyManager: DependencyManager
 
     /// The yt-dlp process currently running, if any, so `cancel()` can
@@ -414,6 +418,7 @@ final class YtDlpModel {
         downloadPhase = expectsVideoTrack ? .downloadingVideo : .downloadingAudio
         destinationCount = 0
         seenDestinations = []
+        isDownloadingSubtitle = false
 
         let nameComponent = fileName.isEmpty ? "%(title)s" : Self.sanitizedFileNameComponent(fileName)
         var args = [
@@ -628,30 +633,37 @@ final class YtDlpModel {
         // A retried/resumed fragment can reprint the same line for the file
         // already in progress, so only a *new* path counts as a new stream.
         // A requested subtitle file gets its own Destination line too,
-        // fetched before the real video/audio streams — without excluding
-        // it here it would count as stream #1 and mislabel the real video
-        // download as "downloadingAudio".
-        if line.contains("[download] Destination:"),
-           let dest,
-           !Self.isSubtitleDestination(dest),
-           !seenDestinations.contains(dest) {
-            seenDestinations.insert(dest)
-            destinationCount += 1
-            let isVideoTrack = destinationCount == 1 && expectsVideoTrack
-            downloadPhase = isVideoTrack ? .downloadingVideo : .downloadingAudio
-            downloadProgress = 0.0
-            // Clear the previous stream's stats rather than leaving them
-            // to show alongside the new stream's phase/progress until its
-            // own first progress line arrives.
-            downloadedSizeText = nil
-            totalSizeText = nil
-            speedText = nil
-            etaText = nil
+        // fetched (and fully downloaded, with its own 0%-100% progress)
+        // before the real video/audio streams — isDownloadingSubtitle tracks
+        // that so its lines don't count as stream #1 below, or flash
+        // downloadProgress to its own 100% just before the real video
+        // stream's Destination line resets it back to 0%.
+        if line.contains("[download] Destination:"), let dest {
+            isDownloadingSubtitle = Self.isSubtitleDestination(dest)
+            if !isDownloadingSubtitle, !seenDestinations.contains(dest) {
+                seenDestinations.insert(dest)
+                destinationCount += 1
+                let isVideoTrack = destinationCount == 1 && expectsVideoTrack
+                downloadPhase = isVideoTrack ? .downloadingVideo : .downloadingAudio
+                downloadProgress = 0.0
+                // Clear the previous stream's stats rather than leaving them
+                // to show alongside the new stream's phase/progress until its
+                // own first progress line arrives.
+                downloadedSizeText = nil
+                totalSizeText = nil
+                speedText = nil
+                etaText = nil
+            }
         }
 
         if line.contains("[Merger]") {
             downloadPhase = .merging
         }
+
+        // The subtitle stream's own progress/size lines (percentage, "of X
+        // at Y ETA Z", its Destination path) are irrelevant to the
+        // video/audio progress this view tracks — see isDownloadingSubtitle above.
+        guard !isDownloadingSubtitle else { return }
 
         // Parsed once and reused below rather than re-read from
         // `downloadProgress`: that stored value can be stale (left over
@@ -677,7 +689,7 @@ final class YtDlpModel {
             }
         }
 
-        if let dest, !Self.isSubtitleDestination(dest) {
+        if let dest {
             lastDownloadedFile = URL(fileURLWithPath: dest)
         }
     }
