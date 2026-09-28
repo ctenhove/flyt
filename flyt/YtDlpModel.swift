@@ -238,6 +238,13 @@ final class YtDlpModel {
     var downloadPhase: DownloadPhase = .idle
     /// Where the last download landed, parsed from yt-dlp's output.
     var lastDownloadedFile: URL?
+    /// Every file the last download actually produced, populated once it
+    /// finishes: one entry normally (or once merged sections land in a
+    /// single file), several when multiple time-range sections were
+    /// requested without merging. The completion screen uses this rather
+    /// than `lastDownloadedFile` alone so it can report — and reveal in
+    /// Finder — every file, not just whichever one happened to finish last.
+    var downloadedFiles: [URL] = []
     /// True if the most recent download ended via `cancel()` rather than
     /// finishing or failing. Cancellation intentionally leaves
     /// `errorMessage` nil (see `download()`), so callers that need to tell
@@ -403,6 +410,7 @@ final class YtDlpModel {
         expectedSectionCount = timeRanges.count
         sectionsCompleted = 0
         sectionOutputFiles = []
+        downloadedFiles = []
         downloadPhase = expectedSectionCount > 0
             ? .trimmingSection(index: 1, total: expectedSectionCount)
             : (expectsVideoTrack ? .downloadingVideo : .downloadingAudio)
@@ -444,11 +452,17 @@ final class YtDlpModel {
                 if mergeSections, sectionOutputFiles.count > 1 {
                     downloadPhase = .merging
                     let mergedFileName = fileName.isEmpty ? "download" : FilenamePolicy.sanitize(fileName)
-                    lastDownloadedFile = try await concatenateSections(
+                    let mergedURL = try await concatenateSections(
                         sectionOutputFiles,
                         finalFileName: mergedFileName,
                         into: destinationFolder
                     )
+                    lastDownloadedFile = mergedURL
+                    downloadedFiles = [mergedURL]
+                } else if expectedSectionCount > 1 {
+                    downloadedFiles = sectionOutputFiles
+                } else if let lastDownloadedFile {
+                    downloadedFiles = [lastDownloadedFile]
                 }
                 downloadProgress = 1.0
             } catch YtDlpError.cancelled {

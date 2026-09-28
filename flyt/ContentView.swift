@@ -240,9 +240,9 @@ struct ContentView: View {
             }
 
         case .complete:
-            if let file = model.lastDownloadedFile {
+            if !model.downloadedFiles.isEmpty {
                 CompleteCard(
-                    savedFileURL: file,
+                    savedFiles: model.downloadedFiles,
                     thumbnailURLString: model.videoInfo?.thumbnail,
                     resolutionLabel: resolutionSummaryLabel,
                     containerLabel: willMerge ? selectedOutputContainer.label : nil,
@@ -250,7 +250,7 @@ struct ContentView: View {
                     destinationFolder: destinationFolder,
                     savedSizeBytes: estimatedSizeBytes,
                     elapsedSeconds: lastCompletedElapsed,
-                    onShowInFinder: { NSWorkspace.shared.activateFileViewerSelecting([file]) },
+                    onShowInFinder: { NSWorkspace.shared.activateFileViewerSelecting(model.downloadedFiles) },
                     onDownloadAnother: resetForNewDownload
                 )
             }
