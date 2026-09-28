@@ -18,12 +18,27 @@ struct TimeRangeEditor: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            ForEach($ranges) { $range in
-                TimeRangeRow(
-                    duration: duration,
-                    range: $range,
-                    onRemove: ranges.count > 1 ? { remove(range.id) } : nil
-                )
+            // Capped rather than left to grow with the range count: an
+            // uncapped list is what made the window balloon past the
+            // screen with several ranges added (the window has no height
+            // limit of its own — see FlytApp's .windowResizability). Below
+            // the cap this just reports its natural (shorter) height, so
+            // one or two ranges never show a scroll indicator at all.
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach($ranges) { $range in
+                        TimeRangeRow(
+                            duration: duration,
+                            range: $range,
+                            onRemove: ranges.count > 1 ? { remove(range.id) } : nil
+                        )
+                    }
+                }
+            }
+            .frame(maxHeight: 170)
+
+            if ranges.hasOverlaps {
+                overlapWarning
             }
 
             Button(action: addRange) {
@@ -44,6 +59,18 @@ struct TimeRangeEditor: View {
                     .foregroundStyle(.flytBodyTextSecondary)
             }
         }
+    }
+
+    private var overlapWarning: some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 10))
+                .padding(.top, 1)
+            Text("Ranges overlap — the shared footage will be downloaded twice.")
+                .font(.system(size: 11, weight: .semibold))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .foregroundStyle(.flytCoralText)
     }
 
     /// Starts the new range where the last one ended, so successive ranges

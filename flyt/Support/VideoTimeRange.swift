@@ -37,3 +37,21 @@ struct VideoTimeRange: Identifiable, Hashable {
         }
     }
 }
+
+extension [VideoTimeRange] {
+    /// True if any two ranges share footage. Overlapping ranges aren't
+    /// prevented — each is fetched as its own independent yt-dlp section,
+    /// and nothing (here or in yt-dlp/ffmpeg's concat) deduplicates the
+    /// shared span, so a "merge into one file" would play it twice. Used to
+    /// warn rather than silently produce that duplicate footage.
+    var hasOverlaps: Bool {
+        for i in indices {
+            for j in indices where j > i {
+                if self[i].start < self[j].end && self[j].start < self[i].end {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+}

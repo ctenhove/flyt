@@ -145,4 +145,30 @@ struct FlytTests {
         #expect(range.end - range.start >= VideoTimeRange.minimumLength)
     }
 
+    // MARK: [VideoTimeRange].hasOverlaps
+
+    @Test func adjacentRangesDoNotOverlap() {
+        let ranges = [VideoTimeRange(start: 0, end: 10), VideoTimeRange(start: 10, end: 20)]
+        #expect(!ranges.hasOverlaps)
+    }
+
+    @Test func overlappingRangesAreDetected() {
+        let ranges = [VideoTimeRange(start: 0, end: 10), VideoTimeRange(start: 5, end: 15)]
+        #expect(ranges.hasOverlaps)
+    }
+
+    @Test func fullyContainedRangeIsDetectedAsOverlap() {
+        let ranges = [VideoTimeRange(start: 0, end: 20), VideoTimeRange(start: 5, end: 10)]
+        #expect(ranges.hasOverlaps)
+    }
+
+    @Test func nonOverlappingOutOfOrderRangesAreNotFlagged() {
+        let ranges = [VideoTimeRange(start: 20, end: 30), VideoTimeRange(start: 0, end: 10)]
+        #expect(!ranges.hasOverlaps)
+    }
+
+    @Test func singleRangeNeverOverlaps() {
+        #expect(![VideoTimeRange(start: 0, end: 10)].hasOverlaps)
+    }
+
 }
