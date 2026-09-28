@@ -25,14 +25,23 @@ struct TimeRangeEditor: View {
     /// in this content-driven-sizing window and collapses to zero height —
     /// a plain `.frame(height:)` doesn't have that ambiguity, but only
     /// actually needs to apply once the list would otherwise grow unbounded.
-    private static let scrollThreshold = 3
-    private static let scrollHeight: CGFloat = 170
+    /// Kept small (rather than fitting ~3 rows) because the rest of the
+    /// options card — filename, resolution, container/audio, audio-only —
+    /// already claims a fair amount of height on its own before this box
+    /// adds anything on top of it.
+    private static let scrollThreshold = 2
+    private static let scrollHeight: CGFloat = 116
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if ranges.count > Self.scrollThreshold {
                 ScrollView {
                     rangeRows
+                        // Room for the scrollbar so it doesn't sit on top
+                        // of each row's remove button — macOS can draw an
+                        // always-visible overlay scrollbar right where an
+                        // edge-aligned trailing control would otherwise be.
+                        .padding(.trailing, 14)
                 }
                 .frame(height: Self.scrollHeight)
             } else {
