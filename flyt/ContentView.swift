@@ -287,17 +287,19 @@ struct ContentView: View {
         selectedVideoFormatID != nil && selectedAudioFormatID != nil
     }
 
-    /// "Video"/"Audio" while a two-stream (merged) download is fetching
-    /// one of its tracks, so the progress bar's restart from 100% back to
-    /// 0% between them reads as a new stream starting rather than a
-    /// glitch. nil for a single-stream download, and during merging
-    /// itself (which has its own dedicated row, not a percentage).
+    /// "Video"/"Audio" while a two-stream (merged) download is fetching one
+    /// of its tracks, or "Section N of M" while trimming — in both cases
+    /// the progress bar's restart from 100% back to 0% between
+    /// tracks/sections needs a label or it reads as a glitch rather than a
+    /// new stream/section starting. nil for a single-stream, single-range
+    /// download, and during merging itself (its own dedicated row, not a
+    /// percentage).
     private var downloadPhaseLabel: String? {
-        guard willMerge else { return nil }
         switch model.downloadPhase {
-        case .downloadingVideo: return "Video"
-        case .downloadingAudio: return "Audio"
-        case .idle, .merging, .trimmingSection: return nil
+        case .downloadingVideo: return willMerge ? "Video" : nil
+        case .downloadingAudio: return willMerge ? "Audio" : nil
+        case .trimmingSection(let index, let total): return total > 1 ? "Section \(index) of \(total)" : nil
+        case .idle, .merging: return nil
         }
     }
 

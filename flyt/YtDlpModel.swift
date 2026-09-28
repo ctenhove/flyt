@@ -14,10 +14,11 @@ enum DownloadPhase: Equatable {
     case downloadingVideo
     case downloadingAudio
     case merging
-    /// Cutting one of several requested time ranges. yt-dlp reports no
-    /// incremental progress for this step (it's a keyframe-accurate ffmpeg
-    /// cut, not a plain download), so this is shown as an indeterminate
-    /// spinner rather than a percentage — see `.merging`.
+    /// Cutting one of several requested time ranges. yt-dlp's own stdout
+    /// reports no incremental progress for this step (it's a keyframe-
+    /// accurate ffmpeg cut, not a plain download) — but ffmpeg's own
+    /// encode progress on stderr does, parsed in processFFmpegStderrLine
+    /// and turned into a real percentage against this section's duration.
     case trimmingSection(index: Int, total: Int)
 
     var label: String {
@@ -288,6 +289,11 @@ final class YtDlpModel {
     /// used to concatenate them into one file when the caller asked to
     /// merge sections.
     private var sectionOutputFiles: [URL] = []
+    /// Each requested section's target length in seconds, in the same
+    /// order as sectionOutputFiles will be filled — the denominator
+    /// processFFmpegStderrLine normalizes ffmpeg's own elapsed-time
+    /// progress against for the section currently being cut.
+    private var sectionDurations: [Double] = []
     private let dependencyManager: DependencyManager
 
     /// The yt-dlp process currently running, if any, so `cancel()` can
@@ -410,6 +416,7 @@ final class YtDlpModel {
         expectedSectionCount = timeRanges.count
         sectionsCompleted = 0
         sectionOutputFiles = []
+        sectionDurations = timeRanges.map { $0.end - $0.start }
         downloadedFiles = []
         downloadPhase = expectedSectionCount > 0
             ? .trimmingSection(index: 1, total: expectedSectionCount)
@@ -603,11 +610,16 @@ final class YtDlpModel {
 
         // Drain stderr concurrently with stdout so the child can't block
         // on a full pipe buffer, keeping the text to report if yt-dlp fails.
+        // Also the only place a sectioned download's real progress shows
+        // up at all — see processFFmpegStderrLine.
         async let stderrLines: [String] = {
             var lines: [String] = []
             for await line in Self.lines(from: errorPipe.fileHandleForReading) {
                 print("yt-dlp stderr: \(line)")
                 lines.append(line)
+                if reportProgress {
+                    await processFFmpegStderrLine(line)
+                }
             }
             return lines
         }()
@@ -659,9 +671,15 @@ final class YtDlpModel {
                     return
                 }
                 buffer.append(data)
-                while let newlineRange = buffer.range(of: Data([0x0A])) {
-                    let lineData = buffer.subdata(in: buffer.startIndex..<newlineRange.lowerBound)
-                    buffer.removeSubrange(buffer.startIndex..<newlineRange.upperBound)
+                // yt-dlp's own stdout (under --newline) only ever uses LF,
+                // so this is a no-op there; ffmpeg's stderr progress line
+                // updates in place with CR instead — without also
+                // splitting on it, every update would sit unterminated in
+                // the buffer as one ever-growing "line" until the next
+                // real LF, instead of arriving as its own line each time.
+                while let terminatorRange = Self.earliestLineTerminator(in: buffer) {
+                    let lineData = buffer.subdata(in: buffer.startIndex..<terminatorRange.lowerBound)
+                    buffer.removeSubrange(buffer.startIndex..<terminatorRange.upperBound)
                     if let line = String(data: lineData, encoding: .utf8) {
                         continuation.yield(line)
                     }
@@ -670,6 +688,17 @@ final class YtDlpModel {
             continuation.onTermination = { _ in
                 handle.readabilityHandler = nil
             }
+        }
+    }
+
+    private nonisolated static func earliestLineTerminator(in data: Data) -> Range<Data.Index>? {
+        let newline = data.range(of: Data([0x0A]))
+        let carriageReturn = data.range(of: Data([0x0D]))
+        switch (newline, carriageReturn) {
+        case (nil, nil): return nil
+        case (let n?, nil): return n
+        case (nil, let c?): return c
+        case (let n?, let c?): return n.lowerBound < c.lowerBound ? n : c
         }
     }
 
@@ -682,6 +711,30 @@ final class YtDlpModel {
     }
 
     // MARK: Output parsing
+
+    /// Interprets one line of ffmpeg's own stderr output during a sectioned
+    /// (trimmed) download — a plain yt-dlp download never routes through
+    /// this pipeline, and this is a no-op outside of one. ffmpeg's
+    /// "frame=... time=HH:MM:SS.ss ..." progress updates in place via
+    /// carriage return rather than yt-dlp's own newline-per-update
+    /// "[download] NN%" — see `lines(from:)` for why those still arrive
+    /// here one at a time regardless.
+    private func processFFmpegStderrLine(_ line: String) {
+        guard expectedSectionCount > 0, sectionsCompleted > 0, sectionsCompleted <= sectionDurations.count else { return }
+        guard let elapsed = Self.parseFFmpegTime(from: line) else { return }
+        let targetDuration = sectionDurations[sectionsCompleted - 1]
+        guard targetDuration > 0 else { return }
+        downloadProgress = min(1.0, elapsed / targetDuration)
+    }
+
+    /// Extracts the "time=HH:MM:SS.ss" field ffmpeg prints on its own
+    /// progress line — how far into the current cut it's encoded so far.
+    private nonisolated static func parseFFmpegTime(from line: String) -> Double? {
+        guard let match = line.firstMatch(of: /time=(\d{2}):(\d{2}):(\d{2})\.(\d{2})/) else { return nil }
+        guard let hours = Double(match.1), let minutes = Double(match.2),
+              let seconds = Double(match.3), let centiseconds = Double(match.4) else { return nil }
+        return hours * 3600 + minutes * 60 + seconds + centiseconds / 100
+    }
 
     /// Interprets one complete line of yt-dlp stdout and updates observable state.
     private func processOutputLine(_ line: String) {
@@ -704,6 +757,14 @@ final class YtDlpModel {
                 sectionOutputFiles.append(URL(fileURLWithPath: dest))
                 downloadPhase = .trimmingSection(index: min(sectionsCompleted, expectedSectionCount), total: expectedSectionCount)
                 lastDownloadedFile = URL(fileURLWithPath: dest)
+                // Fresh section, fresh progress — ffmpeg's own progress
+                // (parsed from stderr in processFFmpegStderrLine) hasn't
+                // reported anything for it yet.
+                downloadProgress = 0.0
+                downloadedSizeText = nil
+                totalSizeText = nil
+                speedText = nil
+                etaText = nil
             } else {
                 destinationCount += 1
                 let isVideoTrack = destinationCount == 1 && expectsVideoTrack

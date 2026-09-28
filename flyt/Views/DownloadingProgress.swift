@@ -42,8 +42,6 @@ struct DownloadingProgress: View {
                     switch phase {
                     case .merging:
                         indeterminateRow(label: "Merging…")
-                    case .trimmingSection:
-                        indeterminateRow(label: phase.label)
                     default:
                         ProgressView(value: progress)
                             .tint(.flytSky)
@@ -70,9 +68,10 @@ struct DownloadingProgress: View {
         }
     }
 
-    /// A spinner + label for phases yt-dlp reports no incremental progress
-    /// for (merging, trimming a section) — a percentage bar would have
-    /// nothing real to show.
+    /// A spinner + label for merging, the one phase with genuinely no
+    /// incremental progress to show (a plain remux, not something ffmpeg
+    /// reports frame-by-frame progress for the way it does while cutting
+    /// a trimmed section).
     private func indeterminateRow(label: String) -> some View {
         HStack(spacing: 8) {
             ProgressView().controlSize(.small)
