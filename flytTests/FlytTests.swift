@@ -82,4 +82,92 @@ struct FlytTests {
         #expect(DependencyManager.parseSHA256(forFilename: "yt-dlp_macos", fromSumsFileContents: "") == nil)
     }
 
+    // MARK: DownloadCoordinator
+
+    @Test func slotIsAvailableInitially() {
+        let coordinator = DownloadCoordinator()
+        #expect(coordinator.hasAvailableSlot)
+        #expect(coordinator.activeCount == 0)
+    }
+
+    @Test func reservingUpToMaxSucceeds() {
+        let coordinator = DownloadCoordinator()
+        for _ in 0..<DownloadCoordinator.maxConcurrentDownloads {
+            #expect(coordinator.tryReserveSlot())
+        }
+        #expect(coordinator.activeCount == DownloadCoordinator.maxConcurrentDownloads)
+    }
+
+    @Test func reservingPastMaxFails() {
+        let coordinator = DownloadCoordinator()
+        for _ in 0..<DownloadCoordinator.maxConcurrentDownloads {
+            _ = coordinator.tryReserveSlot()
+        }
+        #expect(!coordinator.hasAvailableSlot)
+        #expect(!coordinator.tryReserveSlot())
+        #expect(coordinator.activeCount == DownloadCoordinator.maxConcurrentDownloads)
+    }
+
+    @Test func releasingFreesASlot() {
+        let coordinator = DownloadCoordinator()
+        for _ in 0..<DownloadCoordinator.maxConcurrentDownloads {
+            _ = coordinator.tryReserveSlot()
+        }
+        coordinator.releaseSlot()
+        #expect(coordinator.hasAvailableSlot)
+        #expect(coordinator.tryReserveSlot())
+    }
+
+    @Test func releasingBelowZeroStaysAtZero() {
+        let coordinator = DownloadCoordinator()
+        coordinator.releaseSlot()
+        #expect(coordinator.activeCount == 0)
+    }
+
+    // MARK: DownloadHistoryStore
+
+    private static func scratchHistoryURL() -> URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("flyt-history-test-\(UUID().uuidString).json")
+    }
+
+    @Test func newStoreStartsEmpty() {
+        let store = DownloadHistoryStore(fileURL: Self.scratchHistoryURL())
+        #expect(store.entries.isEmpty)
+    }
+
+    @Test func recordingAddsNewestFirst() {
+        let store = DownloadHistoryStore(fileURL: Self.scratchHistoryURL())
+        let first = DownloadHistoryEntry(urlString: "https://youtu.be/a", title: "A", fileName: "a.mp4", thumbnailURLString: nil)
+        let second = DownloadHistoryEntry(urlString: "https://youtu.be/b", title: "B", fileName: "b.mp4", thumbnailURLString: nil)
+        store.record(first)
+        store.record(second)
+        #expect(store.entries.map(\.title) == ["B", "A"])
+    }
+
+    @Test func removingDeletesOnlyThatEntry() {
+        let store = DownloadHistoryStore(fileURL: Self.scratchHistoryURL())
+        let first = DownloadHistoryEntry(urlString: "https://youtu.be/a", title: "A", fileName: "a.mp4", thumbnailURLString: nil)
+        let second = DownloadHistoryEntry(urlString: "https://youtu.be/b", title: "B", fileName: "b.mp4", thumbnailURLString: nil)
+        store.record(first)
+        store.record(second)
+        store.remove(first)
+        #expect(store.entries.map(\.title) == ["B"])
+    }
+
+    @Test func clearAllEmptiesTheStore() {
+        let store = DownloadHistoryStore(fileURL: Self.scratchHistoryURL())
+        store.record(DownloadHistoryEntry(urlString: "https://youtu.be/a", title: "A", fileName: "a.mp4", thumbnailURLString: nil))
+        store.clearAll()
+        #expect(store.entries.isEmpty)
+    }
+
+    @Test func persistsAcrossInstancesViaTheSameFile() {
+        let url = Self.scratchHistoryURL()
+        let first = DownloadHistoryStore(fileURL: url)
+        first.record(DownloadHistoryEntry(urlString: "https://youtu.be/a", title: "A", fileName: "a.mp4", thumbnailURLString: nil))
+
+        let second = DownloadHistoryStore(fileURL: url)
+        #expect(second.entries.map(\.title) == ["A"])
+    }
+
 }
