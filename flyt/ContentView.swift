@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import UserNotifications
 
 /// The app's main window: paste a video URL, fetch its metadata, and download
 /// it to the destination folder with live progress. Composes the redesigned
@@ -64,9 +65,34 @@ struct ContentView: View {
     /// while a URL is still being typed out by hand.
     @State private var pendingFetchTask: Task<Void, Never>?
 
+    /// Bumped whenever the window regains focus, so the idle URL field's
+    /// clipboard check (a computed property, otherwise only re-evaluated
+    /// when some other `@State` changes) re-runs after switching back from
+    /// wherever a YouTube link might have just been copied.
+    @State private var clipboardCheckTick = 0
+
+    /// Keys for the launch-to-launch preferences persisted in `UserDefaults`
+    /// (destination folder, output container, preferred resolution) — plain
+    /// `UserDefaults` rather than security-scoped bookmarks, since the app
+    /// isn't sandboxed.
+    private enum DefaultsKey {
+        static let destinationFolder = "lastDestinationFolderPath"
+        static let outputContainer = "lastOutputContainer"
+        static let preferredResolutionHeight = "lastPreferredResolutionHeight"
+    }
+
     init(dependencyManager: DependencyManager) {
         _model = State(wrappedValue: YtDlpModel(dependencyManager: dependencyManager))
         self.dependencyManager = dependencyManager
+
+        let defaults = UserDefaults.standard
+        if let savedPath = defaults.string(forKey: DefaultsKey.destinationFolder) {
+            _destinationFolder = State(wrappedValue: URL(fileURLWithPath: savedPath))
+        }
+        if let savedContainer = defaults.string(forKey: DefaultsKey.outputContainer),
+           let container = OutputContainer(rawValue: savedContainer) {
+            _selectedOutputContainer = State(wrappedValue: container)
+        }
     }
 
     var body: some View {
@@ -94,7 +120,7 @@ struct ContentView: View {
             resolutionOptions = FormatSelection.resolutionOptions(in: videoFormats)
             audioOptions = FormatSelection.audioOptions(in: audioFormats)
             if selectedVideoFormatID == nil {
-                selectedVideoFormatID = videoFormats.first?.id
+                selectedVideoFormatID = preferredResolutionFormatID() ?? videoFormats.first?.id
             }
             if selectedAudioFormatID == nil {
                 selectedAudioFormatID = audioFormats.first?.id
@@ -102,6 +128,16 @@ struct ContentView: View {
             if !filenameIsCustom {
                 filename = FilenamePolicy.sanitize(info.title)
             }
+        }
+        .onChange(of: destinationFolder) { _, newValue in
+            UserDefaults.standard.set(newValue.path, forKey: DefaultsKey.destinationFolder)
+        }
+        .onChange(of: selectedOutputContainer) { _, newValue in
+            UserDefaults.standard.set(newValue.rawValue, forKey: DefaultsKey.outputContainer)
+        }
+        .onChange(of: selectedVideoFormatID) { _, _ in
+            guard let height = selectedVideoFormat?.height else { return }
+            UserDefaults.standard.set(height, forKey: DefaultsKey.preferredResolutionHeight)
         }
         .onChange(of: audioOnly) { _, isOn in
             if isOn {
@@ -113,6 +149,7 @@ struct ContentView: View {
         }
         .onChange(of: model.isDownloading) { wasDownloading, isDownloading in
             guard wasDownloading, !isDownloading else { return }
+            DockProgress.clear()
             defer { downloadStartedAt = nil }
             // A cancelled download also leaves errorMessage nil (see
             // YtDlpModel.download's cancellation branch), so that check
@@ -123,6 +160,14 @@ struct ContentView: View {
             }
             showingComplete = true
             pulseMark()
+            postCompletionNotificationIfNeeded()
+        }
+        .onChange(of: model.downloadProgress) { _, newValue in
+            guard model.isDownloading else { return }
+            DockProgress.update(fraction: newValue)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            clipboardCheckTick &+= 1
         }
     }
 
@@ -137,11 +182,23 @@ struct ContentView: View {
         return .idle
     }
 
+    /// The idle field's trailing affordance: a one-tap "Paste — youtu.be/…"
+    /// when the clipboard holds a YouTube link and the field is empty,
+    /// otherwise the plain "⌘V" hint (or nothing, once the user starts typing).
+    private var idleTrailing: URLField.Trailing {
+        _ = clipboardCheckTick
+        guard urlString.isEmpty else { return .none }
+        guard let clipboardURL = ClipboardYouTubeURL.current() else { return .hint }
+        return .pasteSuggestion(label: ClipboardYouTubeURL.label(for: clipboardURL)) {
+            urlString = clipboardURL
+        }
+    }
+
     @ViewBuilder
     private var urlField: some View {
         switch phase {
         case .idle:
-            URLField(text: $urlString, tone: .neutral, trailing: urlString.isEmpty ? .hint : .none)
+            URLField(text: $urlString, tone: .neutral, trailing: idleTrailing)
                 .onSubmit(fetchNow)
         case .fetching:
             URLField(text: $urlString, tone: .focused, trailing: .fetching)
@@ -264,6 +321,16 @@ struct ContentView: View {
 
     private var selectedAudioFormat: VideoFormat? {
         audioFormats.first { $0.id == selectedAudioFormatID }
+    }
+
+    /// The format matching the last resolution the user picked on a
+    /// previous video, if this video's own options happen to offer the
+    /// same height — nil falls back to the usual best-quality default.
+    private func preferredResolutionFormatID() -> String? {
+        guard let preferredHeight = UserDefaults.standard.object(forKey: DefaultsKey.preferredResolutionHeight) as? Int else {
+            return nil
+        }
+        return resolutionOptions.first { $0.height == preferredHeight }?.format.id
     }
 
     /// True when both a video and an audio track are selected, meaning
@@ -482,5 +549,19 @@ struct ContentView: View {
                 markPulse = false
             }
         }
+    }
+
+    /// Posts a local notification when a download finishes while the user
+    /// has switched away from the app — the Dock icon alone doesn't call
+    /// out a completed download the way a pulse-then-gone-unnoticed bounce
+    /// does. Silently does nothing if notifications were never authorized.
+    private func postCompletionNotificationIfNeeded() {
+        guard !NSApplication.shared.isActive else { return }
+        let content = UNMutableNotificationContent()
+        content.title = "Download complete"
+        content.body = model.lastDownloadedFile?.lastPathComponent ?? "Your video finished downloading."
+        content.sound = .default
+        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request)
     }
 }

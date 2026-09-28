@@ -21,6 +21,11 @@ struct URLField: View {
 
     enum Trailing {
         case hint, fetching, none
+        /// A one-tap "Paste — youtu.be/…"-style affordance shown in place of
+        /// the ⌘V hint when the clipboard already holds a YouTube URL and the
+        /// field is empty — a one-time check on render rather than continuous
+        /// clipboard watching (see `IdleDropZone`'s doc comment).
+        case pasteSuggestion(label: String, action: () -> Void)
     }
 
     var body: some View {
@@ -31,6 +36,9 @@ struct URLField: View {
                 .textFieldStyle(.plain)
                 .font(.system(size: 13.5))
                 .foregroundStyle(.flytBodyText)
+                .contextMenu {
+                    Button("Paste", action: pasteFromClipboard)
+                }
             trailingView
         }
         .padding(.horizontal, 12)
@@ -82,8 +90,22 @@ struct URLField: View {
                     .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(.flytSkyHover)
             }
+        case .pasteSuggestion(let label, let action):
+            Button(action: action) {
+                Text(label)
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(.flytSky)
+            }
+            .buttonStyle(.plain)
+            .pointingHandCursor()
         case .none:
             EmptyView()
+        }
+    }
+
+    private func pasteFromClipboard() {
+        if let clipboardString = NSPasteboard.general.string(forType: .string) {
+            text = clipboardString
         }
     }
 }

@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import UserNotifications
 
 @main
 struct FlytApp: App {
@@ -28,10 +29,15 @@ struct FlytApp: App {
                 // Runs concurrently with the blocking ffmpeg setup below,
                 // not after it — a yt-dlp refresh must never delay
                 // startup, since (unlike ffmpeg) a working fallback
-                // binary already ships in the bundle either way.
+                // binary already ships in the bundle either way. Requesting
+                // notification authorization up front means it's already
+                // resolved by the time a download could finish in the
+                // background and need to post one.
                 async let ytdlpRefresh: Void = dependencyManager.refreshYtdlpIfNeeded()
+                async let notificationAuth: Void = requestNotificationAuthorization()
                 await dependencyManager.performSetupIfNeeded()
                 await ytdlpRefresh
+                await notificationAuth
             }
         }
         // Compact window (README §3): fixed width, height driven by
@@ -43,5 +49,9 @@ struct FlytApp: App {
         .commands {
             CommandGroup(replacing: .newItem) { }
         }
+    }
+
+    private func requestNotificationAuthorization() async {
+        _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
     }
 }
