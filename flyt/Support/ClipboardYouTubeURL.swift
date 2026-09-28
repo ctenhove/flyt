@@ -26,8 +26,8 @@ enum ClipboardYouTubeURL {
     }
 
     /// True if `raw` parses as an http(s) URL whose host is a known YouTube
-    /// domain. Pure and nonisolated so it's unit-testable without touching
-    /// the actual pasteboard.
+    /// domain. Pure, so it's unit-testable without touching the actual
+    /// pasteboard.
     static func isYouTubeURL(_ raw: String) -> Bool {
         guard let url = URL(string: raw),
               let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
