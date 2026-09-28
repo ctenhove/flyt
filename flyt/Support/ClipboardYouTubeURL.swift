@@ -19,12 +19,22 @@ enum ClipboardYouTubeURL {
     /// The clipboard's current string, if it parses as an http(s) YouTube URL.
     static func current() -> String? {
         guard let raw = NSPasteboard.general.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines),
-              let url = URL(string: raw),
-              let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
-              let host = url.host?.lowercased(), youtubeHosts.contains(host) else {
+              isYouTubeURL(raw) else {
             return nil
         }
         return raw
+    }
+
+    /// True if `raw` parses as an http(s) URL whose host is a known YouTube
+    /// domain. Pure and nonisolated so it's unit-testable without touching
+    /// the actual pasteboard.
+    static func isYouTubeURL(_ raw: String) -> Bool {
+        guard let url = URL(string: raw),
+              let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
+              let host = url.host?.lowercased() else {
+            return false
+        }
+        return youtubeHosts.contains(host)
     }
 
     /// A short label for the paste affordance, e.g. "Paste — youtu.be/dQw4w9WgXcQ".

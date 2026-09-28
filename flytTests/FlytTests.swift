@@ -82,4 +82,36 @@ struct FlytTests {
         #expect(DependencyManager.parseSHA256(forFilename: "yt-dlp_macos", fromSumsFileContents: "") == nil)
     }
 
+    // MARK: ClipboardYouTubeURL.isYouTubeURL
+
+    @Test func recognizesYoutubeDotBeLink() {
+        #expect(ClipboardYouTubeURL.isYouTubeURL("https://youtu.be/dQw4w9WgXcQ"))
+    }
+
+    @Test func recognizesWwwYoutubeLink() {
+        #expect(ClipboardYouTubeURL.isYouTubeURL("https://www.youtube.com/watch?v=dQw4w9WgXcQ"))
+    }
+
+    @Test func rejectsNonYoutubeLink() {
+        #expect(!ClipboardYouTubeURL.isYouTubeURL("https://example.com/watch?v=dQw4w9WgXcQ"))
+    }
+
+    @Test func rejectsPlainText() {
+        #expect(!ClipboardYouTubeURL.isYouTubeURL("not a url"))
+    }
+
+    @Test func rejectsNonHTTPScheme() {
+        #expect(!ClipboardYouTubeURL.isYouTubeURL("ftp://youtube.com/watch?v=dQw4w9WgXcQ"))
+    }
+
+    // MARK: ClipboardYouTubeURL.label(for:)
+
+    @Test func labelShowsHostAndPathForShortURL() {
+        #expect(ClipboardYouTubeURL.label(for: "https://youtu.be/dQw4w9WgXcQ") == "Paste — youtu.be/dQw4w9WgXcQ")
+    }
+
+    @Test func labelDropsWwwPrefix() {
+        #expect(ClipboardYouTubeURL.label(for: "https://www.youtube.com/x") == "Paste — youtube.com/x")
+    }
+
 }
