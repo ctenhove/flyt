@@ -39,6 +39,8 @@ struct OptionsSummaryRow: View {
         }
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }
+        .pointingHandCursor()
+        .help("Expand options")
     }
 
     private var summaryLabel: some View {

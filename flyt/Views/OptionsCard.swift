@@ -67,6 +67,7 @@ struct OptionsCard: View {
                 .tint(.flytSky)
                 .font(.system(size: 12.5, weight: .semibold))
                 .foregroundStyle(.flytBodyTextSecondary)
+                .pointingHandCursor()
         }
         .padding(14)
         .background(Color.flytField)
@@ -94,6 +95,8 @@ struct OptionsCard: View {
                 }
             }
             .buttonStyle(.plain)
+            .pointingHandCursor()
+            .help("Collapse options")
         }
     }
 
@@ -165,6 +168,7 @@ private struct ChipButton: View {
                 )
         }
         .buttonStyle(.plain)
+        .pointingHandCursor()
     }
 }
 
@@ -188,6 +192,7 @@ private struct SegmentedRow<Item: Identifiable>: View {
                         .background(isSelected(item) ? Color.flytSky : Color.flytSurface)
                 }
                 .buttonStyle(.plain)
+                .pointingHandCursor()
                 .overlay(alignment: .leading) {
                     if index > 0 {
                         Rectangle().fill(Color.flytDivider).frame(width: 1)

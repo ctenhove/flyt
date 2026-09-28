@@ -72,6 +72,21 @@ struct CompleteCard: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .strokeBorder(Color.flytDivider)
         )
+        .contextMenu {
+            Button("Open", action: openFile)
+            Button("Copy Path", action: copyPath)
+            Divider()
+            Button("Show in Finder", action: onShowInFinder)
+        }
+    }
+
+    private func openFile() {
+        NSWorkspace.shared.open(savedFileURL)
+    }
+
+    private func copyPath() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(savedFileURL.path, forType: .string)
     }
 
     private var detailLine: String {
@@ -94,6 +109,7 @@ struct CompleteCard: View {
                     .background(Color.flytSky, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
             }
             .buttonStyle(.plain)
+            .pointingHandCursor()
 
             Button(action: onDownloadAnother) {
                 Text("Download another")
@@ -108,6 +124,7 @@ struct CompleteCard: View {
                     )
             }
             .buttonStyle(.plain)
+            .pointingHandCursor()
         }
     }
 }

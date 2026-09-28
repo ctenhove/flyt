@@ -38,6 +38,7 @@ struct FilenameField: View {
                         .buttonStyle(.plain)
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(.flytSkyHover)
+                        .pointingHandCursor()
                 }
             }
             HStack(spacing: 8) {

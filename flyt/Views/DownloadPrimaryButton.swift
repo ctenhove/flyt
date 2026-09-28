@@ -40,6 +40,7 @@ struct DownloadPrimaryButton: View {
         }
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }
+        .pointingHandCursor()
         .keyboardShortcut(.return, modifiers: .command)
     }
 }
