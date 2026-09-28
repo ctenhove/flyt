@@ -37,11 +37,6 @@ struct TimeRangeEditor: View {
             if ranges.count > Self.scrollThreshold {
                 ScrollView {
                     rangeRows
-                        // Room for the scrollbar so it doesn't sit on top
-                        // of each row's remove button — macOS can draw an
-                        // always-visible overlay scrollbar right where an
-                        // edge-aligned trailing control would otherwise be.
-                        .padding(.trailing, 14)
                 }
                 .frame(height: Self.scrollHeight)
             } else {
@@ -82,6 +77,12 @@ struct TimeRangeEditor: View {
                 )
             }
         }
+        // Applied unconditionally — not just once the list is actually
+        // scrollable — so a row's layout never changes shape at the
+        // moment the scrollbar appears. Applying this only inside the
+        // ScrollView branch made every row visibly jump left the instant
+        // a range was added past the threshold.
+        .padding(.trailing, 14)
     }
 
     private var overlapWarning: some View {
