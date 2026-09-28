@@ -69,10 +69,18 @@ struct TimeRangeEditor: View {
 
     private var rangeRows: some View {
         VStack(alignment: .leading, spacing: 12) {
-            ForEach($ranges) { $range in
+            // ForEach($ranges) would hand each row a Binding subscripted
+            // by array index under the hood. If the array is cleared out
+            // from under it — e.g. resetFetchedState() setting timeRanges
+            // = [] on "Download another" — a row that hasn't finished
+            // tearing down yet can still read that binding and trip an
+            // index-out-of-range crash. Looking each row's binding up by
+            // ID instead means a stale reference just degrades to a
+            // harmless fallback instead of crashing.
+            ForEach(ranges) { range in
                 TimeRangeRow(
                     duration: duration,
-                    range: $range,
+                    range: binding(for: range.id),
                     onRemove: ranges.count > 1 ? { remove(range.id) } : nil
                 )
             }
@@ -83,6 +91,16 @@ struct TimeRangeEditor: View {
         // ScrollView branch made every row visibly jump left the instant
         // a range was added past the threshold.
         .padding(.trailing, 14)
+    }
+
+    private func binding(for id: VideoTimeRange.ID) -> Binding<VideoTimeRange> {
+        Binding(
+            get: { ranges.first { $0.id == id } ?? VideoTimeRange(start: 0, end: VideoTimeRange.minimumLength) },
+            set: { newValue in
+                guard let index = ranges.firstIndex(where: { $0.id == id }) else { return }
+                ranges[index] = newValue
+            }
+        )
     }
 
     private var overlapWarning: some View {
