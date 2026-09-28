@@ -55,7 +55,17 @@ struct RangeSlider: View {
                     guard usableWidth > 0 else { return }
                     let fraction = min(max((drag.location.x - thumbDiameter / 2) / usableWidth, 0), 1)
                     let raw = bounds.lowerBound + fraction * (bounds.upperBound - bounds.lowerBound)
-                    let minimumGap = VideoTimeRange.minimumLength
+                    // The two handles must never overlap on screen: their
+                    // centers need to stay at least one full diameter
+                    // apart in points, so their closest edges meet rather
+                    // than cross. A fixed gap in the slider's own units
+                    // (e.g. a flat 1 second) doesn't guarantee that — at
+                    // this track's current points-per-unit scale, 1 second
+                    // can be a fraction of a point on a long video, so the
+                    // gap is derived from the thumb's actual on-screen
+                    // size instead of a value-space constant.
+                    let unitsPerPoint = (bounds.upperBound - bounds.lowerBound) / usableWidth
+                    let minimumGap = thumbDiameter * unitsPerPoint
                     let constrained = isStart
                         ? min(raw, otherValue - minimumGap)
                         : max(raw, otherValue + minimumGap)
