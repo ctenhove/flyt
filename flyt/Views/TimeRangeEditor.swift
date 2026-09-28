@@ -16,26 +16,28 @@ struct TimeRangeEditor: View {
     @Binding var ranges: [VideoTimeRange]
     @Binding var mergeSections: Bool
 
+    /// Ranges beyond this many switch the list into a fixed-height,
+    /// scrollable box instead of growing freely — the window has no
+    /// height cap of its own (see FlytApp's .windowResizability), so an
+    /// uncapped list is what made it balloon past the screen with several
+    /// ranges added. Below the threshold there's no ScrollView at all: one
+    /// with only a `maxHeight` has nothing concrete to size itself against
+    /// in this content-driven-sizing window and collapses to zero height —
+    /// a plain `.frame(height:)` doesn't have that ambiguity, but only
+    /// actually needs to apply once the list would otherwise grow unbounded.
+    private static let scrollThreshold = 3
+    private static let scrollHeight: CGFloat = 170
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            // Capped rather than left to grow with the range count: an
-            // uncapped list is what made the window balloon past the
-            // screen with several ranges added (the window has no height
-            // limit of its own — see FlytApp's .windowResizability). Below
-            // the cap this just reports its natural (shorter) height, so
-            // one or two ranges never show a scroll indicator at all.
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    ForEach($ranges) { $range in
-                        TimeRangeRow(
-                            duration: duration,
-                            range: $range,
-                            onRemove: ranges.count > 1 ? { remove(range.id) } : nil
-                        )
-                    }
+            if ranges.count > Self.scrollThreshold {
+                ScrollView {
+                    rangeRows
                 }
+                .frame(height: Self.scrollHeight)
+            } else {
+                rangeRows
             }
-            .frame(maxHeight: 170)
 
             if ranges.hasOverlaps {
                 overlapWarning
@@ -57,6 +59,18 @@ struct TimeRangeEditor: View {
                     .tint(.flytSky)
                     .font(.system(size: 12.5, weight: .semibold))
                     .foregroundStyle(.flytBodyTextSecondary)
+            }
+        }
+    }
+
+    private var rangeRows: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach($ranges) { $range in
+                TimeRangeRow(
+                    duration: duration,
+                    range: $range,
+                    onRemove: ranges.count > 1 ? { remove(range.id) } : nil
+                )
             }
         }
     }
