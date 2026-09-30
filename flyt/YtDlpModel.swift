@@ -377,6 +377,23 @@ final class YtDlpModel {
         destinationCount = 0
         seenDestinations = []
 
+        // Every download writes into its own hidden, per-download scratch
+        // folder rather than the visible destination directly:
+        //  - keeps in-progress fragments/.part files out of Finder instead
+        //    of appearing (and disappearing) in the destination folder
+        //    while a download is running;
+        //  - means two downloads of the same video — same title, same
+        //    format — can never collide on the same fragment/temp
+        //    filenames the way they would sharing one folder, which is
+        //    what was corrupting/leaving fragments behind before;
+        //  - makes "delete everything" on cancel or failure a single
+        //    directory removal instead of hunting down whatever partial
+        //    files yt-dlp happened to leave behind.
+        // The dot prefix is what actually hides it from Finder; the UUID
+        // just needs to be unique per download, not itself secret.
+        let tempFolder = destinationFolder.appendingPathComponent(".flyt-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: tempFolder, withIntermediateDirectories: true)
+
         let nameComponent = fileName.isEmpty ? "%(title)s" : Self.sanitizedFileNameComponent(fileName)
         var args = [
             "--newline",
@@ -387,7 +404,7 @@ final class YtDlpModel {
             "--no-playlist",
             "--ffmpeg-location", dependencyManager.ffmpegURL.path,
             "--merge-output-format", outputContainer.rawValue,
-            "-o", "\(destinationFolder.path)/\(nameComponent).%(ext)s"
+            "-o", "\(tempFolder.path)/\(nameComponent).%(ext)s"
         ]
         let formatSelector = [videoFormatId, audioFormatId].compactMap { $0 }.joined(separator: "+")
         if !formatSelector.isEmpty {
@@ -398,17 +415,52 @@ final class YtDlpModel {
         Task {
             do {
                 try await runWithProgress(args: args)
+                // Move the finished file out to where the user actually
+                // asked for it, then delete the scratch folder (any
+                // leftover intermediate files yt-dlp didn't already clean
+                // up go with it). If the move itself fails for some reason,
+                // leave the scratch folder in place rather than deleting a
+                // download that never made it out — lastDownloadedFile
+                // still points at it there, so it's not lost, just hidden.
+                if let finished = lastDownloadedFile,
+                   let moved = Self.moveToDestination(finished, destinationFolder: destinationFolder) {
+                    lastDownloadedFile = moved
+                    try? FileManager.default.removeItem(at: tempFolder)
+                }
                 downloadProgress = 1.0
             } catch YtDlpError.cancelled {
                 // User-initiated; leave the UI clean rather than showing an
                 // error. wasCancelled is how callers still tell this apart
                 // from a genuine completion, since errorMessage alone can't.
                 wasCancelled = true
+                try? FileManager.default.removeItem(at: tempFolder)
             } catch {
                 errorMessage = error.diagnosticDescription
+                try? FileManager.default.removeItem(at: tempFolder)
             }
             isDownloading = false
             downloadPhase = .idle
+        }
+    }
+
+    /// Moves a finished download from its hidden scratch folder to
+    /// `destinationFolder`, re-resolving a unique name there (the same way
+    /// `FilenamePolicy.uniqueFilename` does before a download even starts)
+    /// in case two downloads targeting the same name both finish around
+    /// the same time — `FileManager.moveItem` never silently overwrites,
+    /// so without this the second one to finish would just fail to move
+    /// at all rather than risk clobbering the first. Returns `nil` if the
+    /// move couldn't be completed.
+    private nonisolated static func moveToDestination(_ file: URL, destinationFolder: URL) -> URL? {
+        let ext = file.pathExtension
+        let base = file.deletingPathExtension().lastPathComponent
+        let uniqueBase = FilenamePolicy.uniqueFilename(base: base, in: destinationFolder)
+        let target = destinationFolder.appendingPathComponent(ext.isEmpty ? uniqueBase : "\(uniqueBase).\(ext)")
+        do {
+            try FileManager.default.moveItem(at: file, to: target)
+            return target
+        } catch {
+            return nil
         }
     }
 

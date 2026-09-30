@@ -124,6 +124,17 @@ struct ContentView: View {
                     onRemove: { remove(item) },
                     onComplete: pulseMark
                 )
+                // Explicit rather than relying on ForEach's own diffing:
+                // `itemsList` wraps this same `cards` view in a ScrollView
+                // once there's more than one item, and without an explicit
+                // id that structural change around it was enough for
+                // SwiftUI to treat an existing card as a brand new view —
+                // silently resetting all its @State (selected formats,
+                // resolution/audio options, options-expanded) the instant
+                // a second item was added, with nothing left to
+                // repopulate it since model.videoInfo hadn't actually
+                // changed to re-trigger that.
+                .id(item.id)
             }
         }
     }
@@ -175,7 +186,7 @@ struct ContentView: View {
     /// "the current video".
     private func addItem(urlString: String) {
         let model = YtDlpModel(dependencyManager: dependencyManager)
-        items.append(Item(urlString: urlString, model: model))
+        items.insert(Item(urlString: urlString, model: model), at: 0)
         newURLString = ""
     }
 
