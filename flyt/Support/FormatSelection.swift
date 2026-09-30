@@ -35,13 +35,14 @@ enum FormatSelection {
     }
 
     /// Distinct resolutions actually offered, highest first, each mapped to
-    /// its best (highest `qualityRank`) format.
+    /// its best (highest `qualityRank`, ties broken toward a broadly
+    /// compatible codec) format.
     static func resolutionOptions(in formats: [VideoFormat]) -> [ResolutionOption] {
         let videoFormats = formats.filter { $0.hasVideo && $0.height != nil }
         let byHeight = Dictionary(grouping: videoFormats) { $0.height! }
         return byHeight
             .compactMap { height, formats in
-                formats.max { $0.qualityRank < $1.qualityRank }.map { ResolutionOption(height: height, format: $0) }
+                formats.max(by: byQualityThenCodecCompatibility).map { ResolutionOption(height: height, format: $0) }
             }
             .sorted { $0.height > $1.height }
     }
@@ -58,6 +59,19 @@ enum FormatSelection {
                 formats.max { $0.qualityRank < $1.qualityRank }.map { AudioOption(ext: ext, format: $0) }
             }
             .sorted { $0.format.qualityRank > $1.format.qualityRank }
+    }
+
+    /// Orders two video formats by quality first; when a resolution ladder
+    /// has several formats tied on `qualityRank` (a common case: YouTube
+    /// often offers the same resolution in H.264, VP9, and AV1), prefers
+    /// the one with a broadly compatible codec, so the picker doesn't
+    /// default to VP9/AV1 over an equally-good H.264 option just because
+    /// yt-dlp happened to list it first. Only matters when there's an
+    /// actual choice — a quality tier with no H.264 option still resolves
+    /// to whatever *is* offered there.
+    private static func byQualityThenCodecCompatibility(_ a: VideoFormat, _ b: VideoFormat) -> Bool {
+        if a.qualityRank != b.qualityRank { return a.qualityRank < b.qualityRank }
+        return !a.isBroadlyCompatibleCodec && b.isBroadlyCompatibleCodec
     }
 
     /// Best-effort combined download size for the currently selected

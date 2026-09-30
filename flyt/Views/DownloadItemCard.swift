@@ -251,8 +251,20 @@ struct DownloadItemCard: View {
 
     // MARK: Derived selection state
 
+    /// Filters and sorts `formats` best-quality-first. When two formats tie
+    /// on quality (a common case: YouTube often offers the same resolution
+    /// in H.264, VP9, and AV1), prefers H.264 — the codec reliably playable
+    /// in QuickTime once muxed into MP4; VP9/AV1 can produce a file
+    /// QuickTime opens but won't show any video from. This is what
+    /// `selectedVideoFormatID`/`selectedAudioFormatID` default to
+    /// (`.first` on the result) before the user ever opens the options
+    /// card, so it's the tie-break that actually matters most.
     private static func sortedFormats(_ formats: [VideoFormat], where predicate: (VideoFormat) -> Bool) -> [VideoFormat] {
-        formats.filter(predicate).sorted { $0.qualityRank > $1.qualityRank }
+        formats.filter(predicate).sorted {
+            $0.qualityRank != $1.qualityRank
+                ? $0.qualityRank > $1.qualityRank
+                : $0.isBroadlyCompatibleCodec && !$1.isBroadlyCompatibleCodec
+        }
     }
 
     private var selectedVideoFormat: VideoFormat? {

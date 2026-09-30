@@ -151,6 +151,17 @@ struct VideoFormat: Codable, Identifiable, Hashable {
         return abr ?? tbr ?? 0
     }
 
+    /// True for H.264/AVC — the one video codec reliably playable in
+    /// QuickTime Player and other AVFoundation-based software once muxed
+    /// into an MP4 container. VP9 and AV1 often produce an MP4 QuickTime
+    /// opens fine (the container and AAC audio both decode normally) but
+    /// won't render any video from — audio plays, the picture doesn't.
+    /// Used only as a selection tie-break, not a filter: a video with no
+    /// H.264 option at a given quality still needs *a* format.
+    var isBroadlyCompatibleCodec: Bool {
+        vcodec?.hasPrefix("avc1") == true
+    }
+
     /// A short human-readable summary for a format picker, e.g.
     /// "1080p60 · mp4 · h264 · video only · 85.4 MB" or "128 kbps · m4a · aac · 3.1 MB".
     var label: String {

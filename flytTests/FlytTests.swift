@@ -170,4 +170,57 @@ struct FlytTests {
         #expect(second.entries.map(\.title) == ["A"])
     }
 
+    // MARK: VideoFormat.isBroadlyCompatibleCodec
+
+    @Test func avcIsBroadlyCompatible() {
+        #expect(Self.videoFormat(id: "137", vcodec: "avc1.640028").isBroadlyCompatibleCodec)
+    }
+
+    @Test func vp9IsNotBroadlyCompatible() {
+        #expect(!Self.videoFormat(id: "248", vcodec: "vp09.00.40.08").isBroadlyCompatibleCodec)
+    }
+
+    @Test func av1IsNotBroadlyCompatible() {
+        #expect(!Self.videoFormat(id: "399", vcodec: "av01.0.08M.08").isBroadlyCompatibleCodec)
+    }
+
+    // MARK: FormatSelection.resolutionOptions codec tie-break
+
+    @Test func tiedQualityPrefersBroadlyCompatibleCodec() {
+        let avc = Self.videoFormat(id: "137", height: 1080, vcodec: "avc1.640028")
+        let vp9 = Self.videoFormat(id: "248", height: 1080, vcodec: "vp09.00.40.08")
+        let av1 = Self.videoFormat(id: "399", height: 1080, vcodec: "av01.0.08M.08")
+        // Regardless of input order, the H.264 option should win the tie.
+        #expect(FormatSelection.resolutionOptions(in: [vp9, av1, avc]).first?.format.id == "137")
+        #expect(FormatSelection.resolutionOptions(in: [avc, vp9, av1]).first?.format.id == "137")
+    }
+
+    @Test func noCompatibleCodecStillResolvesToBestQuality() {
+        let vp9 = Self.videoFormat(id: "620", height: 1440, fps: 25, vcodec: "vp09.00.50.08")
+        let av1 = Self.videoFormat(id: "400", height: 1440, fps: 30, vcodec: "av01.0.12M.08")
+        #expect(FormatSelection.resolutionOptions(in: [vp9, av1]).first?.format.id == "400")
+    }
+
+    @Test func higherQualityWinsEvenOverCompatibleCodec() {
+        let lowerAVC = Self.videoFormat(id: "135", height: 480, vcodec: "avc1.4d401e")
+        let higherAV1 = Self.videoFormat(id: "401", height: 2160, vcodec: "av01.0.12M.08")
+        #expect(FormatSelection.resolutionOptions(in: [lowerAVC, higherAV1]).first?.format.id == "401")
+    }
+
+    private static func videoFormat(id: String, height: Int = 1080, fps: Double = 25, vcodec: String) -> VideoFormat {
+        VideoFormat(
+            formatId: id,
+            ext: "mp4",
+            resolution: nil,
+            height: height,
+            fps: fps,
+            vcodec: vcodec,
+            acodec: nil,
+            abr: nil,
+            tbr: nil,
+            filesize: nil,
+            filesizeApprox: nil
+        )
+    }
+
 }
