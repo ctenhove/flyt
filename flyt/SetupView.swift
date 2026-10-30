@@ -306,5 +306,6 @@ private struct QuitButton: View {
         }
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }
+        .pointingHandCursor()
     }
 }

@@ -86,6 +86,22 @@ struct CompleteCard: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .strokeBorder(Color.flytDivider)
         )
+        .contextMenu {
+            Button("Open", action: openFile)
+            Button("Copy Path", action: copyPath)
+            Divider()
+            Button("Show in Finder", action: onShowInFinder)
+        }
+    }
+
+    private func openFile() {
+        // Several clips: open the first; the rest are one "Show in Finder" away.
+        if let first = savedFiles.first { NSWorkspace.shared.open(first) }
+    }
+
+    private func copyPath() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(savedFiles.map(\.path).joined(separator: "\n"), forType: .string)
     }
 
     /// The saved file's name, or a "N clips saved" summary once there's
@@ -116,6 +132,7 @@ struct CompleteCard: View {
                     .background(Color.flytSky, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
             }
             .buttonStyle(.plain)
+            .pointingHandCursor()
 
             Button(action: onDownloadAnother) {
                 Text("Download another")
@@ -130,6 +147,7 @@ struct CompleteCard: View {
                     )
             }
             .buttonStyle(.plain)
+            .pointingHandCursor()
         }
     }
 }

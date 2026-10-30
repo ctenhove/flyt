@@ -64,6 +64,7 @@ struct DownloadingProgress: View {
                     )
             }
             .buttonStyle(.plain)
+            .pointingHandCursor()
             .keyboardShortcut(.escape, modifiers: [])
         }
     }

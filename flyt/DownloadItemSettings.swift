@@ -19,7 +19,7 @@ import Observation
 final class DownloadItemSettings {
     var selectedVideoFormatID: String?
     var selectedAudioFormatID: String?
-    var selectedOutputContainer: OutputContainer = .mp4
+    var selectedOutputContainer: OutputContainer = Preferences.outputContainer ?? .mp4
     var filename: String = ""
     var filenameIsCustom = false
     var optionsExpanded = false

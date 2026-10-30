@@ -59,8 +59,7 @@ struct TimeRangeEditor: View {
 
             if ranges.count > 1 {
                 Toggle("Merge into one file", isOn: $mergeSections)
-                    .toggleStyle(.switch)
-                    .tint(.flytSky)
+                    .toggleStyle(.flytSwitch)
                     .font(.system(size: 12.5, weight: .semibold))
                     .foregroundStyle(.flytBodyTextSecondary)
             }

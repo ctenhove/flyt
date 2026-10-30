@@ -57,7 +57,7 @@ struct DownloadItemCard: View {
                 automaticCaptions: info.automaticCaptions
             )
             if settings.selectedVideoFormatID == nil {
-                settings.selectedVideoFormatID = settings.videoFormats.first?.id
+                settings.selectedVideoFormatID = preferredResolutionFormatID() ?? settings.videoFormats.first?.id
             }
             if settings.selectedAudioFormatID == nil {
                 settings.selectedAudioFormatID = settings.audioFormats.first?.id
@@ -110,6 +110,7 @@ struct DownloadItemCard: View {
                 settings.lastCompletedElapsed = Date().timeIntervalSince(startedAt)
             }
             settings.showingComplete = true
+            CompletionNotification.postIfInactive(fileName: model.downloadedFiles.first?.lastPathComponent)
             if let file = model.downloadedFiles.first ?? model.lastDownloadedFile, let info = model.videoInfo {
                 historyStore.record(DownloadHistoryEntry(
                     urlString: originalURLString,
@@ -167,7 +168,7 @@ struct DownloadItemCard: View {
                         onResetFilename: resetFilenameToTitle,
                         resolutionOptions: settings.resolutionOptions,
                         selectedHeight: heightBinding,
-                        selectedContainer: $settings.selectedOutputContainer,
+                        selectedContainer: containerBinding,
                         audioOptions: settings.audioOptions,
                         selectedAudioExt: audioExtBinding,
                         audioOnly: $settings.audioOnly,
@@ -285,6 +286,14 @@ struct DownloadItemCard: View {
         settings.videoFormats.first { $0.id == settings.selectedVideoFormatID }
     }
 
+    /// The format matching the last resolution the user picked on any video,
+    /// if this video happens to offer the same height — nil falls back to
+    /// the usual best-quality default.
+    private func preferredResolutionFormatID() -> String? {
+        guard let preferredHeight = Preferences.preferredResolutionHeight else { return nil }
+        return settings.resolutionOptions.first { $0.height == preferredHeight }?.format.id
+    }
+
     private var selectedAudioFormat: VideoFormat? {
         settings.audioFormats.first { $0.id == settings.selectedAudioFormatID }
     }
@@ -362,6 +371,21 @@ struct DownloadItemCard: View {
             set: { newHeight in
                 guard let newHeight, let match = settings.resolutionOptions.first(where: { $0.height == newHeight }) else { return }
                 settings.selectedVideoFormatID = match.format.id
+                // Only a deliberate pick is remembered — not the default
+                // chosen when a video lacks the preferred height, which
+                // would otherwise overwrite the preference.
+                Preferences.preferredResolutionHeight = newHeight
+            }
+        )
+    }
+
+    /// Like `heightBinding`, remembers only a deliberate choice.
+    private var containerBinding: Binding<OutputContainer> {
+        Binding(
+            get: { settings.selectedOutputContainer },
+            set: {
+                settings.selectedOutputContainer = $0
+                Preferences.outputContainer = $0
             }
         )
     }
@@ -455,6 +479,7 @@ struct DownloadItemCard: View {
             ? ""
             : FilenamePolicy.uniqueFilename(base: sidecarBase, in: destinationFolder)
         settings.downloadStartedAt = Date()
+        CompletionNotification.requestAuthorizationIfNeeded()
         let started = model.download(
             urlString: originalURLString,
             videoFormatId: settings.selectedVideoFormatID,

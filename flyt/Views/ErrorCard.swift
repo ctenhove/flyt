@@ -64,5 +64,6 @@ struct ErrorCard: View {
                 )
         }
         .buttonStyle(.plain)
+        .pointingHandCursor()
     }
 }

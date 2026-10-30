@@ -78,10 +78,10 @@ struct OptionsCard: View {
                 .frame(height: 1)
 
             Toggle("Audio only", isOn: $audioOnly)
-                .toggleStyle(.switch)
-                .tint(.flytSky)
+                .toggleStyle(.flytSwitch)
                 .font(.system(size: 12.5, weight: .semibold))
                 .foregroundStyle(.flytBodyTextSecondary)
+                .pointingHandCursor()
 
             if !subtitleLanguageOptions.isEmpty {
                 Rectangle()
@@ -125,6 +125,8 @@ struct OptionsCard: View {
                 }
             }
             .buttonStyle(.plain)
+            .pointingHandCursor()
+            .help("Collapse options")
         }
     }
 
@@ -174,8 +176,7 @@ struct OptionsCard: View {
     private var subtitlesSection: some View {
         VStack(alignment: .leading, spacing: 7) {
             Toggle("Download subtitles", isOn: $subtitlesEnabled)
-                .toggleStyle(.switch)
-                .tint(.flytSky)
+                .toggleStyle(.flytSwitch)
                 .font(.system(size: 12.5, weight: .semibold))
                 .foregroundStyle(.flytBodyTextSecondary)
 
@@ -187,8 +188,7 @@ struct OptionsCard: View {
                     // track entirely.
                     if !audioOnly {
                         Toggle("Embed", isOn: $embedSubtitles)
-                            .toggleStyle(.switch)
-                            .tint(.flytSky)
+                            .toggleStyle(.flytSwitch)
                             .font(.system(size: 11.5, weight: .semibold))
                             .foregroundStyle(.flytBodyTextSecondary)
                     }
@@ -243,8 +243,7 @@ struct OptionsCard: View {
     private func trimSection(duration: Double) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Toggle("Trim to section(s)", isOn: $trimEnabled)
-                .toggleStyle(.switch)
-                .tint(.flytSky)
+                .toggleStyle(.flytSwitch)
                 .font(.system(size: 12.5, weight: .semibold))
                 .foregroundStyle(.flytBodyTextSecondary)
 
@@ -279,6 +278,7 @@ private struct ChipButton: View {
                 )
         }
         .buttonStyle(.plain)
+        .pointingHandCursor()
     }
 }
 
@@ -302,6 +302,7 @@ private struct SegmentedRow<Item: Identifiable>: View {
                         .background(isSelected(item) ? Color.flytSky : Color.flytSurface)
                 }
                 .buttonStyle(.plain)
+                .pointingHandCursor()
                 .overlay(alignment: .leading) {
                     if index > 0 {
                         Rectangle().fill(Color.flytDivider).frame(width: 1)

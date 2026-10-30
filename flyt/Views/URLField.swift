@@ -21,6 +21,11 @@ struct URLField: View {
 
     enum Trailing {
         case hint, fetching, none
+        /// A one-tap "Paste — youtu.be/…"-style affordance shown in place of
+        /// the ⌘V hint when the clipboard already holds a YouTube URL and the
+        /// field is empty — a one-time check on render rather than continuous
+        /// clipboard watching (see `IdleDropZone`'s doc comment).
+        case pasteSuggestion(label: String, action: () -> Void)
     }
 
     var body: some View {
@@ -31,6 +36,17 @@ struct URLField: View {
                 .textFieldStyle(.plain)
                 .font(.system(size: 13.5))
                 .foregroundStyle(.flytBodyText)
+                // Replacing the context menu drops the standard editing
+                // commands, so they're rebuilt here. Each acts on the field
+                // being edited (the selection / cursor), the way the real
+                // commands do.
+                .contextMenu {
+                    Button("Cut") { sendEditingAction(#selector(NSText.cut(_:))) }
+                    Button("Copy") { sendEditingAction(#selector(NSText.copy(_:))) }
+                    Button("Paste", action: pasteFromClipboard)
+                    Divider()
+                    Button("Select All") { sendEditingAction(#selector(NSText.selectAll(_:))) }
+                }
             trailingView
         }
         .padding(.horizontal, 12)
@@ -82,8 +98,34 @@ struct URLField: View {
                     .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(.flytSkyHover)
             }
+        case .pasteSuggestion(let label, let action):
+            Button(action: action) {
+                Text(label)
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(.flytSky)
+            }
+            .buttonStyle(.plain)
+            .pointingHandCursor()
         case .none:
             EmptyView()
+        }
+    }
+
+    /// Sends an editing command to the field being edited; false if no text
+    /// field has focus (right-clicking doesn't necessarily give it focus).
+    @discardableResult
+    private func sendEditingAction(_ action: Selector) -> Bool {
+        guard NSApp.keyWindow?.firstResponder is NSText else { return false }
+        return NSApp.sendAction(action, to: nil, from: nil)
+    }
+
+    /// Pastes at the cursor / over the selection when the field is being
+    /// edited; otherwise the field has no cursor to respect, so the
+    /// clipboard simply becomes its contents.
+    private func pasteFromClipboard() {
+        if sendEditingAction(#selector(NSText.paste(_:))) { return }
+        if let clipboardString = NSPasteboard.general.string(forType: .string) {
+            text = clipboardString.trimmingCharacters(in: .whitespacesAndNewlines)
         }
     }
 }

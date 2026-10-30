@@ -29,6 +29,8 @@ struct FooterPathRow: View {
             Button("Change…", action: onChange)
                 .buttonStyle(.plain)
                 .foregroundStyle(.flytSky)
+                .pointingHandCursor()
+                .help("Choose a different destination folder")
             if let ytdlpVersion {
                 Text("·").foregroundStyle(.flytBorder)
                 Text("yt-dlp \(ytdlpVersion)")
