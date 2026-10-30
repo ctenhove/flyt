@@ -306,7 +306,7 @@ struct DownloadItemCard: View {
         switch model.downloadPhase {
         case .downloadingVideo: return willMerge ? "Video" : nil
         case .downloadingAudio: return willMerge ? "Audio" : nil
-        case .trimmingSection(let index, let total): return total > 1 ? "Section \(index) of \(total)" : nil
+        case .trimmingSection(let index, let total): return total > 1 ? "Section \(index) of \(total)" : "Trimming"
         case .idle, .merging: return nil
         }
     }

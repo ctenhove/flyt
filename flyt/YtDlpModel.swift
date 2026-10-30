@@ -986,13 +986,6 @@ final class YtDlpModel {
 
     // MARK: Output parsing
 
-    /// Interprets one line of ffmpeg's own stderr output during a sectioned
-    /// (trimmed) download — a plain yt-dlp download never routes through
-    /// this pipeline, and this is a no-op outside of one. ffmpeg's
-    /// "frame=... time=HH:MM:SS.ss ..." progress updates in place via
-    /// carriage return rather than yt-dlp's own newline-per-update
-    /// "[download] NN%" — see `lines(from:)` for why those still arrive
-    /// here one at a time regardless.
     /// Records a failed subtitle fetch (a warning, thanks to `--ignore-errors`)
     /// so the completion screen can mention it.
     private func noteSubtitleFailure(_ line: String) {
@@ -1000,12 +993,23 @@ final class YtDlpModel {
         subtitleFailureNote = "Couldn't download '\(match.1)' subtitles: \(match.2)"
     }
 
+    /// Interprets one line of ffmpeg's own stderr output during a sectioned
+    /// (trimmed) download — a plain yt-dlp download never routes through
+    /// this pipeline, and this is a no-op outside of one. ffmpeg's
+    /// "frame=... time=HH:MM:SS.ss ..." progress updates in place via
+    /// carriage return rather than yt-dlp's own newline-per-update
+    /// "[download] NN%" — see `lines(from:)` for why those still arrive
+    /// here one at a time regardless.
     private func processFFmpegStderrLine(_ line: String) {
         guard expectedSectionCount > 0, sectionsCompleted > 0, sectionsCompleted <= sectionDurations.count else { return }
         guard let elapsed = Self.parseFFmpegTime(from: line) else { return }
         let targetDuration = sectionDurations[sectionsCompleted - 1]
         guard targetDuration > 0 else { return }
         downloadProgress = min(1.0, elapsed / targetDuration)
+        // A cut has no byte counts or transfer speed to show, so report how
+        // far into the clip ffmpeg is instead: "0:15 of 0:30".
+        downloadedSizeText = FlytFormat.duration(min(elapsed, targetDuration))
+        totalSizeText = FlytFormat.duration(targetDuration)
     }
 
     /// Extracts the "time=HH:MM:SS.ss" field ffmpeg prints on its own
