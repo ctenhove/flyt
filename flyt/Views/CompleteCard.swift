@@ -28,6 +28,9 @@ struct CompleteCard: View {
     var destinationFolder: URL
     var savedSizeBytes: Int64?
     var elapsedSeconds: Double?
+    /// A non-fatal problem worth mentioning (say, subtitles that couldn't
+    /// be fetched even though the video saved fine).
+    var noticeText: String?
     var onShowInFinder: () -> Void
     var onDownloadAnother: () -> Void
 
@@ -35,6 +38,12 @@ struct CompleteCard: View {
         VStack(spacing: 16) {
             header
             card
+            if let noticeText {
+                Text(noticeText)
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(.flytMutedText)
+                    .multilineTextAlignment(.center)
+            }
             buttons
         }
     }

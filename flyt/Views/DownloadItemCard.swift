@@ -234,6 +234,7 @@ struct DownloadItemCard: View {
                     destinationFolder: destinationFolder,
                     savedSizeBytes: estimatedSizeBytes,
                     elapsedSeconds: settings.lastCompletedElapsed,
+                    noticeText: model.subtitleFailureNote,
                     onShowInFinder: { NSWorkspace.shared.activateFileViewerSelecting(model.downloadedFiles) },
                     onDownloadAnother: dismiss
                 )

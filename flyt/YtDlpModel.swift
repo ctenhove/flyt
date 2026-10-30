@@ -296,6 +296,10 @@ final class YtDlpModel {
     /// completion screen, notably — need this rather than inferring it
     /// from the absence of an error.
     var wasCancelled = false
+    /// Set when the video downloaded fine but its subtitles couldn't be
+    /// fetched, so the completion screen can say so rather than the user
+    /// finding the subtitles missing. Reset at the start of each download.
+    var subtitleFailureNote: String?
     /// Downloaded-so-far and total size, already unit-formatted (e.g.
     /// "34.1 MB", "74.3 MB"), derived from yt-dlp's own progress line.
     /// `nil` until the first progress line with a total size arrives.
@@ -475,6 +479,7 @@ final class YtDlpModel {
         etaText = nil
         errorMessage = nil
         wasCancelled = false
+        subtitleFailureNote = nil
         // yt-dlp's own default format selection (both nil) resolves to
         // bestvideo+bestaudio, i.e. video first — so the first destination
         // is audio only when the caller explicitly picked audio with no video.
@@ -547,6 +552,13 @@ final class YtDlpModel {
             // --write-auto-subs alone ignores manual tracks. With both,
             // yt-dlp prefers the manual track and falls back to auto.
             args += ["--sub-langs", subtitleLanguage.code, "--write-subs", "--write-auto-subs"]
+            // Subtitles are a bonus, not the point of the download: without
+            // this, yt-dlp aborts the whole thing when the subtitle request
+            // fails (YouTube rate-limits them with HTTP 429 fairly often),
+            // video and all. With it, that failure is just a warning and the
+            // video still downloads — see `noteSubtitleFailure`, which tells
+            // the user. Real failures of the video itself still exit nonzero.
+            args += ["--ignore-errors"]
             if embedSubtitles {
                 // Explicit --write-subs makes yt-dlp treat the subtitle file
                 // as requested and keep it as a sidecar next to the embedded
@@ -874,6 +886,7 @@ final class YtDlpModel {
                 lines.append(line)
                 if reportProgress {
                     await processFFmpegStderrLine(line)
+                    await noteSubtitleFailure(line)
                 }
             }
             return lines
@@ -974,6 +987,13 @@ final class YtDlpModel {
     /// carriage return rather than yt-dlp's own newline-per-update
     /// "[download] NN%" — see `lines(from:)` for why those still arrive
     /// here one at a time regardless.
+    /// Records a failed subtitle fetch (a warning, thanks to `--ignore-errors`)
+    /// so the completion screen can mention it.
+    private func noteSubtitleFailure(_ line: String) {
+        guard let match = line.firstMatch(of: /Unable to download video subtitles for '([^']+)': (.+)/) else { return }
+        subtitleFailureNote = "Couldn't download '\(match.1)' subtitles: \(match.2)"
+    }
+
     private func processFFmpegStderrLine(_ line: String) {
         guard expectedSectionCount > 0, sectionsCompleted > 0, sectionsCompleted <= sectionDurations.count else { return }
         guard let elapsed = Self.parseFFmpegTime(from: line) else { return }
