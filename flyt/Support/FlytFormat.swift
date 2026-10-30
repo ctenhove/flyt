@@ -23,6 +23,21 @@ enum FlytFormat {
             : String(format: "%d:%02d", minutes, secs)
     }
 
+    /// The inverse of `duration(_:)`: parses "m:ss" or "h:mm:ss" (colon-
+    /// separated, each part a non-negative number) into seconds. Lenient
+    /// about a minutes/seconds part being 60 or over (e.g. "1:90" → 150s)
+    /// rather than rejecting it — the caller clamps the result into the
+    /// video's actual duration anyway, so there's nothing to gain from a
+    /// stricter parse here. Returns nil for anything else (empty string,
+    /// wrong number of parts, non-numeric part, negative number).
+    static func parseDuration(_ text: String) -> Double? {
+        let parts = text.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
+        guard (2...3).contains(parts.count) else { return nil }
+        let numbers = parts.compactMap { Double($0) }
+        guard numbers.count == parts.count, numbers.allSatisfy({ $0 >= 0 }) else { return nil }
+        return numbers.reduce(0) { total, part in total * 60 + part }
+    }
+
     /// "1.2M views", "48K views", or "812 views".
     static func viewCount(_ count: Int) -> String {
         switch count {

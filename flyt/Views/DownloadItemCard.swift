@@ -37,11 +37,28 @@ struct DownloadItemCard: View {
     @State private var optionsExpanded = false
     @State private var audioOnly = false
     @State private var lastVideoFormatID: String?
+    @State private var subtitlesEnabled = false
+    @State private var selectedSubtitleLanguageCode: String?
+    /// Mux subtitles into the video file instead of writing a sidecar file.
+    /// Defaults on: embedding is what most people expect from "download
+    /// subtitles" — a loose .srt/.vtt file alongside the video is the
+    /// opt-out, not the default.
+    @State private var embedSubtitles = true
+    /// Name for the sidecar subtitle file (no extension). Follows the video
+    /// filename until the user types their own.
+    @State private var subtitleFilename = ""
+    @State private var subtitleFilenameIsCustom = false
+    @State private var trimEnabled = false
+    @State private var timeRanges: [VideoTimeRange] = []
+    /// Only meaningful with more than one range: concatenate them into a
+    /// single output file instead of one file per range.
+    @State private var mergeSections = false
 
     @State private var videoFormats: [VideoFormat] = []
     @State private var audioFormats: [VideoFormat] = []
     @State private var resolutionOptions: [FormatSelection.ResolutionOption] = []
     @State private var audioOptions: [FormatSelection.AudioOption] = []
+    @State private var subtitleLanguageOptions: [SubtitleSelection.LanguageOption] = []
 
     @State private var showingComplete = false
     @State private var downloadStartedAt: Date?
@@ -76,23 +93,45 @@ struct DownloadItemCard: View {
             audioFormats = Self.sortedFormats(info.formats) { $0.isAudioOnly }
             resolutionOptions = FormatSelection.resolutionOptions(in: videoFormats)
             audioOptions = FormatSelection.audioOptions(in: audioFormats)
+            subtitleLanguageOptions = SubtitleSelection.languageOptions(
+                subtitles: info.subtitles,
+                automaticCaptions: info.automaticCaptions
+            )
             if selectedVideoFormatID == nil {
                 selectedVideoFormatID = videoFormats.first?.id
             }
             if selectedAudioFormatID == nil {
                 selectedAudioFormatID = audioFormats.first?.id
             }
+            // A code left over from a previous fetch may no longer be on
+            // offer; an unmatched code would silently download no subtitles.
+            if !subtitleLanguageOptions.contains(where: { $0.code == selectedSubtitleLanguageCode }) {
+                selectedSubtitleLanguageCode = subtitleLanguageOptions.first?.code
+            }
+            if subtitleLanguageOptions.isEmpty {
+                subtitlesEnabled = false
+            }
             if !filenameIsCustom {
                 filename = FilenamePolicy.sanitize(info.title)
             }
         }
         .onChange(of: audioOnly) { _, isOn in
+            // embedSubtitles is left as-is while audioOnly is on: the toggle
+            // is hidden (there's no video track to embed into) and
+            // attemptStart() already gates on `&& !audioOnly`, so its
+            // stored value only matters again once a video track returns.
             if isOn {
                 lastVideoFormatID = selectedVideoFormatID
                 selectedVideoFormatID = nil
             } else {
                 selectedVideoFormatID = lastVideoFormatID ?? videoFormats.first?.id
             }
+        }
+        .onChange(of: trimEnabled) { _, isOn in
+            guard isOn, timeRanges.isEmpty, let duration = model.videoInfo?.duration else { return }
+            var range = VideoTimeRange(start: 0, end: 30)
+            range.clamp(to: duration)
+            timeRanges = [range]
         }
         .onChange(of: coordinator.activeCount) {
             guard isQueued else { return }
@@ -112,7 +151,7 @@ struct DownloadItemCard: View {
                 lastCompletedElapsed = Date().timeIntervalSince(downloadStartedAt)
             }
             showingComplete = true
-            if let file = model.lastDownloadedFile, let info = model.videoInfo {
+            if let file = model.downloadedFiles.first ?? model.lastDownloadedFile, let info = model.videoInfo {
                 historyStore.record(DownloadHistoryEntry(
                     urlString: originalURLString,
                     title: info.title,
@@ -173,6 +212,17 @@ struct DownloadItemCard: View {
                         audioOptions: audioOptions,
                         selectedAudioExt: audioExtBinding,
                         audioOnly: $audioOnly,
+                        subtitleLanguageOptions: subtitleLanguageOptions,
+                        subtitlesEnabled: $subtitlesEnabled,
+                        selectedSubtitleLanguageCode: $selectedSubtitleLanguageCode,
+                        embedSubtitles: $embedSubtitles,
+                        subtitleFilename: subtitleFilenameBinding,
+                        subtitleFilenameIsCustom: subtitleFilenameIsCustom,
+                        onResetSubtitleFilename: { subtitleFilenameIsCustom = false },
+                        duration: info.duration,
+                        trimEnabled: $trimEnabled,
+                        timeRanges: $timeRanges,
+                        mergeSections: $mergeSections,
                         onCollapse: { optionsExpanded = false }
                     )
                 } else {
@@ -215,9 +265,9 @@ struct DownloadItemCard: View {
             }
 
         case .complete:
-            if let file = model.lastDownloadedFile {
+            if !model.downloadedFiles.isEmpty {
                 CompleteCard(
-                    savedFileURL: file,
+                    savedFiles: model.downloadedFiles,
                     thumbnailURLString: model.videoInfo?.thumbnail,
                     resolutionLabel: resolutionSummaryLabel,
                     containerLabel: willMerge ? selectedOutputContainer.label : nil,
@@ -225,7 +275,7 @@ struct DownloadItemCard: View {
                     destinationFolder: destinationFolder,
                     savedSizeBytes: estimatedSizeBytes,
                     elapsedSeconds: lastCompletedElapsed,
-                    onShowInFinder: { NSWorkspace.shared.activateFileViewerSelecting([file]) },
+                    onShowInFinder: { NSWorkspace.shared.activateFileViewerSelecting(model.downloadedFiles) },
                     onDownloadAnother: dismiss
                 )
             }
@@ -255,15 +305,19 @@ struct DownloadItemCard: View {
     /// on quality (a common case: YouTube often offers the same resolution
     /// in H.264, VP9, and AV1), prefers H.264 — the codec reliably playable
     /// in QuickTime once muxed into MP4; VP9/AV1 can produce a file
-    /// QuickTime opens but won't show any video from. This is what
+    /// QuickTime opens but won't show any video from. Still tied after that
+    /// (say, the same stream over plain HTTP and HLS), prefers reliable
+    /// progress reporting — see `VideoFormat.hasReliableProgress` — so the
+    /// download UI doesn't show a jumpy size estimate for no quality
+    /// benefit. This is what
     /// `selectedVideoFormatID`/`selectedAudioFormatID` default to
     /// (`.first` on the result) before the user ever opens the options
     /// card, so it's the tie-break that actually matters most.
     private static func sortedFormats(_ formats: [VideoFormat], where predicate: (VideoFormat) -> Bool) -> [VideoFormat] {
         formats.filter(predicate).sorted {
-            $0.qualityRank != $1.qualityRank
-                ? $0.qualityRank > $1.qualityRank
-                : $0.isBroadlyCompatibleCodec && !$1.isBroadlyCompatibleCodec
+            if $0.qualityRank != $1.qualityRank { return $0.qualityRank > $1.qualityRank }
+            if $0.isBroadlyCompatibleCodec != $1.isBroadlyCompatibleCodec { return $0.isBroadlyCompatibleCodec }
+            return $0.hasReliableProgress && !$1.hasReliableProgress
         }
     }
 
@@ -275,15 +329,24 @@ struct DownloadItemCard: View {
         audioFormats.first { $0.id == selectedAudioFormatID }
     }
 
+    private var selectedSubtitleLanguage: SubtitleSelection.LanguageOption? {
+        guard subtitlesEnabled else { return nil }
+        return subtitleLanguageOptions.first { $0.code == selectedSubtitleLanguageCode }
+    }
+
     private var willMerge: Bool {
         selectedVideoFormatID != nil && selectedAudioFormatID != nil
     }
 
+    /// "Video"/"Audio" while a two-stream (merged) download is fetching one
+    /// of its tracks, or "Section N of M" while trimming — in both cases
+    /// the progress bar's restart from 100% back to 0% needs a label or it
+    /// reads as a glitch rather than a new stream/section starting.
     private var downloadPhaseLabel: String? {
-        guard willMerge else { return nil }
         switch model.downloadPhase {
-        case .downloadingVideo: return "Video"
-        case .downloadingAudio: return "Audio"
+        case .downloadingVideo: return willMerge ? "Video" : nil
+        case .downloadingAudio: return willMerge ? "Audio" : nil
+        case .trimmingSection(let index, let total): return total > 1 ? "Section \(index) of \(total)" : nil
         case .idle, .merging: return nil
         }
     }
@@ -304,15 +367,29 @@ struct DownloadItemCard: View {
         if let resolutionSummaryLabel { segments.append(resolutionSummaryLabel) }
         if selectedVideoFormatID != nil { segments.append(selectedOutputContainer.label.uppercased()) }
         if let ext = selectedAudioFormat?.ext { segments.append(ext.uppercased()) }
+        if let selectedSubtitleLanguage { segments.append("\(selectedSubtitleLanguage.code.uppercased()) CC") }
+        if trimEnabled, !timeRanges.isEmpty {
+            segments.append(timeRanges.count > 1 ? "\(timeRanges.count) CLIPS" : "TRIMMED")
+        }
         return segments
     }
 
+    /// The full-video estimate scaled down to the trimmed portion when
+    /// trimming is active: a known `filesize`/`filesizeApprox` is for the
+    /// *whole* stream, so without this a 10-second clip out of an hour-long
+    /// video would still show the full video's size.
     private var estimatedSizeBytes: Int64? {
-        FormatSelection.estimatedSizeBytes(
+        guard let fullEstimate = FormatSelection.estimatedSizeBytes(
             video: selectedVideoFormat,
             audio: selectedAudioFormat,
             durationSeconds: model.videoInfo?.duration
-        )
+        ) else { return nil }
+        guard trimEnabled, !timeRanges.isEmpty,
+              let fullDuration = model.videoInfo?.duration, fullDuration > 0 else {
+            return fullEstimate
+        }
+        let trimmedDuration = timeRanges.reduce(0) { $0 + max(0, $1.end - $1.start) }
+        return Int64(Double(fullEstimate) * (trimmedDuration / fullDuration))
     }
 
     private var estimatedSizeText: String? {
@@ -345,6 +422,18 @@ struct DownloadItemCard: View {
             set: { newValue in
                 filename = newValue
                 filenameIsCustom = true
+            }
+        )
+    }
+
+    /// Shows the video filename until the user edits it, so the two stay in
+    /// step by default; typing latches `subtitleFilenameIsCustom`.
+    private var subtitleFilenameBinding: Binding<String> {
+        Binding(
+            get: { subtitleFilenameIsCustom ? subtitleFilename : filename },
+            set: {
+                subtitleFilename = $0
+                subtitleFilenameIsCustom = true
             }
         )
     }
@@ -398,8 +487,13 @@ struct DownloadItemCard: View {
         let base = filename.isEmpty ? FilenamePolicy.sanitize(info.title) : FilenamePolicy.sanitize(filename)
         let uniqueBase = FilenamePolicy.uniqueFilename(
             base: base.isEmpty ? "download" : base,
-            in: destinationFolder
+            in: destinationFolder,
+            sectioned: trimEnabled && timeRanges.count > 1
         )
+        let sidecarBase = FilenamePolicy.sanitize(subtitleFilenameIsCustom ? subtitleFilename : "")
+        let uniqueSubtitleBase = sidecarBase.isEmpty
+            ? ""
+            : FilenamePolicy.uniqueFilename(base: sidecarBase, in: destinationFolder)
         downloadStartedAt = Date()
         let started = model.download(
             urlString: originalURLString,
@@ -407,7 +501,12 @@ struct DownloadItemCard: View {
             audioFormatId: selectedAudioFormatID,
             outputContainer: selectedOutputContainer,
             destinationFolder: destinationFolder,
-            fileName: uniqueBase
+            fileName: uniqueBase,
+            subtitleLanguage: selectedSubtitleLanguage,
+            embedSubtitles: embedSubtitles && !audioOnly,
+            subtitleFileName: uniqueSubtitleBase,
+            timeRanges: trimEnabled ? timeRanges : [],
+            mergeSections: mergeSections
         )
         // No download means isDownloading never flips, so the observer
         // that normally releases the slot would never fire.

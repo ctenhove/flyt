@@ -11,7 +11,12 @@ import SwiftUI
 /// The mockup's mark-drop animation plays on the titlebar mark instead of
 /// here — see `MainWindowChrome`.
 struct CompleteCard: View {
-    var savedFileURL: URL
+    /// Every file the download actually produced — one entry for a normal
+    /// (or merged-sections) download, several when multiple time-range
+    /// sections were requested without merging. Assumed non-empty by
+    /// every computed property below; the caller only shows this card once
+    /// there's something to report.
+    var savedFiles: [URL]
     var thumbnailURLString: String?
     var resolutionLabel: String?
     /// nil when no merge happened (audio-only, or video with no audio
@@ -55,7 +60,7 @@ struct CompleteCard: View {
         HStack(spacing: 13) {
             VideoThumbnail(urlString: thumbnailURLString, width: 104, height: 59, cornerRadius: 6, durationSeconds: nil)
             VStack(alignment: .leading, spacing: 4) {
-                Text(savedFileURL.lastPathComponent)
+                Text(titleText)
                     .font(.system(size: 13.5, weight: .bold))
                     .foregroundStyle(.flytBodyText)
                     .lineLimit(1)
@@ -72,6 +77,14 @@ struct CompleteCard: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .strokeBorder(Color.flytDivider)
         )
+    }
+
+    /// The saved file's name, or a "N clips saved" summary once there's
+    /// more than one — naming just one of several would read as if the
+    /// others weren't saved at all, and "Show in Finder" already reveals
+    /// every one of them together.
+    private var titleText: String {
+        savedFiles.count > 1 ? "\(savedFiles.count) clips saved" : (savedFiles.first?.lastPathComponent ?? "")
     }
 
     private var detailLine: String {
