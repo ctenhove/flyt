@@ -538,6 +538,12 @@ final class YtDlpModel {
             // video/audio destination pair, which would blow past
             // the two streams processOutputLine expects to see.
             "--no-playlist",
+            // Machine-readable progress instead of yt-dlp's formatted text,
+            // whose layout varies (padded "~" estimates, "Unknown" speed/ETA,
+            // fragment counters) and was too easy to fail to parse. Starts
+            // with "[download] " so everything that keys off that tag still
+            // treats these as download-progress lines.
+            "--progress-template", Self.progressTemplate,
             "--ffmpeg-location", dependencyManager.ffmpegURL.path,
             "--merge-output-format", outputContainer.rawValue,
             "-o", "\(tempFolder.path)/\(nameComponent)\(sectionSuffix).%(ext)s"
@@ -1082,7 +1088,8 @@ final class YtDlpModel {
         // video/audio progress this view tracks — see isDownloadingSubtitle above.
         if isDownloadingSubtitle {
             // Its own 100% line is the last thing it prints.
-            if Self.parseProgress(from: line) == 1.0 { isDownloadingSubtitle = false }
+            let fraction = Self.parseProgressTemplate(from: line)?.fraction ?? Self.parseProgress(from: line)
+            if fraction == 1.0 { isDownloadingSubtitle = false }
             return
         }
 
@@ -1099,6 +1106,12 @@ final class YtDlpModel {
         // has size/speed/ETA but, for whatever reason, no percentage of
         // its own), which would make `downloadedSizeText` show a wrong
         // "X of Y" pairing rather than staying nil until real data exists.
+        if let snapshot = Self.parseProgressTemplate(from: line) {
+            apply(snapshot)
+            if let dest { lastDownloadedFile = URL(fileURLWithPath: dest) }
+            return
+        }
+
         let percent = Self.parseProgress(from: line)
         if let percent {
             downloadProgress = percent
@@ -1124,6 +1137,26 @@ final class YtDlpModel {
         }
     }
 
+    /// Publishes one progress update: the bar, "X of Y", speed and time left.
+    /// A field yt-dlp has no value for is left as it was rather than blanked,
+    /// so the readout doesn't flicker between updates.
+    private func apply(_ snapshot: ProgressSnapshot) {
+        if let fraction = snapshot.fraction { downloadProgress = fraction }
+        if let total = snapshot.totalBytes {
+            // "~" marks an estimate, which fragmented streams refine as they go.
+            totalSizeText = (snapshot.totalIsEstimate ? "~" : "") + FlytFormat.fileSize(total)
+            if let downloaded = snapshot.downloadedBytes {
+                downloadedSizeText = FlytFormat.fileSize(min(downloaded, total))
+            }
+        }
+        if let speed = snapshot.bytesPerSecond, speed > 0 {
+            speedText = FlytFormat.fileSize(Int64(speed)) + "/s"
+        }
+        if let eta = snapshot.etaSeconds {
+            etaText = FlytFormat.duration(Double(eta))
+        }
+    }
+
     /// Subtitle sidecar extensions yt-dlp can write with `--write-subs`/
     /// `--write-auto-subs`, so their Destination lines can be told apart
     /// from the video/audio streams `processOutputLine` tracks.
@@ -1142,6 +1175,58 @@ final class YtDlpModel {
     private nonisolated static func parseProgress(from line: String) -> Double? {
         guard let match = line.firstMatch(of: /(\d+(?:\.\d+)?)%/) else { return nil }
         return Double(match.1).map { $0 / 100.0 }
+    }
+
+    /// The `--progress-template` passed to yt-dlp: the raw numbers, "NA" where
+    /// yt-dlp has none, separated by "|" after a marker `parseProgressTemplate` looks for.
+    nonisolated static let progressTemplate = "download:[download] flytprog|"
+        + "%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|"
+        + "%(progress.speed)s|%(progress.eta)s|%(progress.fragment_index)s|%(progress.fragment_count)s"
+
+    /// One progress update as yt-dlp reports it.
+    struct ProgressSnapshot: Equatable {
+        var downloadedBytes: Int64?
+        var totalBytes: Int64?
+        /// True when `totalBytes` is yt-dlp's estimate (fragmented streams
+        /// don't know their real size up front) rather than an exact size.
+        var totalIsEstimate: Bool
+        var bytesPerSecond: Double?
+        var etaSeconds: Int?
+        var fragmentIndex: Int?
+        var fragmentCount: Int?
+
+        /// 0...1, from bytes when a total is known, else from fragments.
+        var fraction: Double? {
+            if let downloadedBytes, let totalBytes, totalBytes > 0 {
+                return min(1, Double(downloadedBytes) / Double(totalBytes))
+            }
+            if let fragmentIndex, let fragmentCount, fragmentCount > 0 {
+                return min(1, Double(fragmentIndex) / Double(fragmentCount))
+            }
+            return nil
+        }
+    }
+
+    /// Parses a line produced by `progressTemplate`; nil for any other line.
+    nonisolated static func parseProgressTemplate(from line: String) -> ProgressSnapshot? {
+        guard let marker = line.range(of: "flytprog|") else { return nil }
+        let fields = line[marker.upperBound...].split(separator: "|", omittingEmptySubsequences: false)
+        guard fields.count >= 7 else { return nil }
+        func number(_ field: Substring) -> Double? {
+            let text = field.trimmingCharacters(in: .whitespaces)
+            return text == "NA" ? nil : Double(text)
+        }
+        let exactTotal = number(fields[1])
+        let estimatedTotal = number(fields[2])
+        return ProgressSnapshot(
+            downloadedBytes: number(fields[0]).map { Int64($0) },
+            totalBytes: (exactTotal ?? estimatedTotal).map { Int64($0) },
+            totalIsEstimate: exactTotal == nil && estimatedTotal != nil,
+            bytesPerSecond: number(fields[3]),
+            etaSeconds: number(fields[4]).map { Int($0) },
+            fragmentIndex: number(fields[5]).map { Int($0) },
+            fragmentCount: number(fields[6]).map { Int($0) }
+        )
     }
 
     /// Extracts the unit-formatted total size, speed, and ETA yt-dlp prints

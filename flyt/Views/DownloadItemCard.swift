@@ -65,7 +65,7 @@ struct DownloadItemCard: View {
             // A code left over from a previous fetch may no longer be on
             // offer; an unmatched code would silently download no subtitles.
             if !settings.subtitleLanguageOptions.contains(where: { $0.code == settings.selectedSubtitleLanguageCode }) {
-                settings.selectedSubtitleLanguageCode = settings.subtitleLanguageOptions.first?.code
+                settings.selectedSubtitleLanguageCode = SubtitleSelection.defaultLanguageCode(in: settings.subtitleLanguageOptions)
             }
             if settings.subtitleLanguageOptions.isEmpty {
                 settings.subtitlesEnabled = false
