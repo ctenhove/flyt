@@ -3,6 +3,7 @@
 //  flyt
 //
 
+import Foundation
 import Observation
 
 /// Everything a `DownloadItemCard` has configured or derived for its video,

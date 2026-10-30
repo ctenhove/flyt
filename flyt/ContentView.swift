@@ -119,12 +119,12 @@ struct ContentView: View {
                 DownloadItemCard(
                     originalURLString: item.urlString,
                     model: item.model,
-                    settings: item.settings,
                     destinationFolder: destinationFolder,
                     coordinator: coordinator,
                     historyStore: historyStore,
                     onRemove: { remove(item) },
-                    onComplete: pulseMark
+                    onComplete: pulseMark,
+                    settings: item.settings
                 )
                 // Not enough on its own: `itemsList` wraps this same view in
                 // a ScrollView once there's more than one item, and that
