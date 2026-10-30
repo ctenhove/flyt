@@ -363,6 +363,11 @@ final class YtDlpModel {
     ///
     /// Bails out if a fetch or download is already in flight — see the note
     /// on `runVersion()`.
+    ///
+    /// Returns whether a download actually started, so a caller that
+    /// reserved a `DownloadCoordinator` slot for it knows to release the
+    /// slot when it didn't.
+    @discardableResult
     func download(
         urlString: String,
         videoFormatId: String?,
@@ -370,8 +375,8 @@ final class YtDlpModel {
         outputContainer: OutputContainer,
         destinationFolder: URL,
         fileName: String
-    ) {
-        guard !isBusy else { return }
+    ) -> Bool {
+        guard !isBusy else { return false }
         isDownloading = true
         downloadProgress = 0.0
         downloadedSizeText = nil
@@ -403,7 +408,17 @@ final class YtDlpModel {
         // The dot prefix is what actually hides it from Finder; the UUID
         // just needs to be unique per download, not itself secret.
         let tempFolder = destinationFolder.appendingPathComponent(".flyt-\(UUID().uuidString)", isDirectory: true)
-        try? FileManager.default.createDirectory(at: tempFolder, withIntermediateDirectories: true)
+        do {
+            try FileManager.default.createDirectory(at: tempFolder, withIntermediateDirectories: true)
+        } catch {
+            errorMessage = "Couldn't write to \(destinationFolder.path): \(error.localizedDescription)"
+            isDownloading = false
+            downloadPhase = .idle
+            return false
+        }
+        // Recorded so a quit or crash before the cleanup below can't leave
+        // it behind for good — see ScratchFolderRegistry.sweepStale.
+        ScratchFolderRegistry.register(tempFolder)
 
         let nameComponent = fileName.isEmpty ? "%(title)s" : Self.sanitizedFileNameComponent(fileName)
         var args = [
@@ -429,16 +444,26 @@ final class YtDlpModel {
                 // Move the finished file out to where the user actually
                 // asked for it, then delete the scratch folder (any
                 // leftover intermediate files yt-dlp didn't already clean
-                // up go with it). If the move itself fails for some reason,
-                // leave the scratch folder in place rather than deleting a
-                // download that never made it out — lastDownloadedFile
-                // still points at it there, so it's not lost, just hidden.
-                if let finished = lastDownloadedFile,
-                   let moved = Self.moveToDestination(finished, destinationFolder: destinationFolder) {
+                // up go with it).
+                let finished = lastDownloadedFile
+                // Off the main actor: across volumes this is a full copy.
+                let moved = await Task.detached {
+                    finished.flatMap { Self.moveToDestination($0, destinationFolder: destinationFolder) }
+                }.value
+                if let moved {
                     lastDownloadedFile = moved
                     try? FileManager.default.removeItem(at: tempFolder)
+                } else {
+                    // The download itself succeeded but never made it out,
+                    // so don't delete it (or let a later sweep) — report
+                    // the failure instead of a "Complete" card pointing
+                    // at a hidden folder.
+                    lastDownloadedFile = nil
+                    errorMessage = finished == nil
+                        ? "The download finished, but no output file was found. Anything yt-dlp wrote is in \(tempFolder.path)."
+                        : "The download finished, but couldn't be moved to \(destinationFolder.path). It's still at \(finished!.path)."
                 }
-                downloadProgress = 1.0
+                if errorMessage == nil { downloadProgress = 1.0 }
             } catch YtDlpError.cancelled {
                 // User-initiated; leave the UI clean rather than showing an
                 // error. wasCancelled is how callers still tell this apart
@@ -449,9 +474,13 @@ final class YtDlpModel {
                 errorMessage = error.diagnosticDescription
                 try? FileManager.default.removeItem(at: tempFolder)
             }
+            // Whether it was deleted or deliberately kept (failed move),
+            // it's no longer a leftover for a later launch to sweep.
+            ScratchFolderRegistry.unregister(tempFolder)
             isDownloading = false
             downloadPhase = .idle
         }
+        return true
     }
 
     /// Moves a finished download from its hidden scratch folder to
@@ -465,14 +494,20 @@ final class YtDlpModel {
     private nonisolated static func moveToDestination(_ file: URL, destinationFolder: URL) -> URL? {
         let ext = file.pathExtension
         let base = file.deletingPathExtension().lastPathComponent
-        let uniqueBase = FilenamePolicy.uniqueFilename(base: base, in: destinationFolder)
-        let target = destinationFolder.appendingPathComponent(ext.isEmpty ? uniqueBase : "\(uniqueBase).\(ext)")
-        do {
-            try FileManager.default.moveItem(at: file, to: target)
-            return target
-        } catch {
-            return nil
+        // The name is re-resolved on each attempt: another download can
+        // claim it between the check and the move, and moveItem then fails
+        // rather than overwrite.
+        for _ in 0..<5 {
+            let uniqueBase = FilenamePolicy.uniqueFilename(base: base, in: destinationFolder)
+            let target = destinationFolder.appendingPathComponent(ext.isEmpty ? uniqueBase : "\(uniqueBase).\(ext)")
+            do {
+                try FileManager.default.moveItem(at: file, to: target)
+                return target
+            } catch {
+                if !FileManager.default.fileExists(atPath: file.path) { return nil }
+            }
         }
+        return nil
     }
 
     /// Cancels the in-flight fetch or download, if any, by terminating the

@@ -383,20 +383,25 @@ struct DownloadItemCard: View {
     /// this card as queued so the `coordinator.activeCount` observer above
     /// retries once one frees up.
     private func attemptStart() {
+        // Checked before a slot is claimed: returning early afterwards
+        // would hold the slot for a download that never runs.
+        guard let info = model.videoInfo else {
+            isQueued = false
+            return
+        }
         guard coordinator.tryReserveSlot() else {
             isQueued = true
             return
         }
         isQueued = false
         hasReservedSlot = true
-        guard let info = model.videoInfo else { return }
         let base = filename.isEmpty ? FilenamePolicy.sanitize(info.title) : FilenamePolicy.sanitize(filename)
         let uniqueBase = FilenamePolicy.uniqueFilename(
             base: base.isEmpty ? "download" : base,
             in: destinationFolder
         )
         downloadStartedAt = Date()
-        model.download(
+        let started = model.download(
             urlString: originalURLString,
             videoFormatId: selectedVideoFormatID,
             audioFormatId: selectedAudioFormatID,
@@ -404,5 +409,12 @@ struct DownloadItemCard: View {
             destinationFolder: destinationFolder,
             fileName: uniqueBase
         )
+        // No download means isDownloading never flips, so the observer
+        // that normally releases the slot would never fire.
+        if !started {
+            coordinator.releaseSlot()
+            hasReservedSlot = false
+            downloadStartedAt = nil
+        }
     }
 }

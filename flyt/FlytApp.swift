@@ -11,6 +11,12 @@ import SwiftUI
 struct FlytApp: App {
     @State private var dependencyManager = DependencyManager()
 
+    init() {
+        // Before any download can start: clears hidden scratch folders a
+        // previous run left behind by quitting or crashing mid-download.
+        ScratchFolderRegistry.sweepStale()
+    }
+
     var body: some Scene {
         WindowGroup {
             Group {

@@ -76,8 +76,20 @@ final class DownloadHistoryStore {
     }
 
     private func load() {
-        guard let data = try? Data(contentsOf: fileURL) else { return }
-        entries = (try? JSONDecoder().decode([DownloadHistoryEntry].self, from: data)) ?? []
+        // No file yet is the normal first-run case, not a failure.
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return }
+        do {
+            let data = try Data(contentsOf: fileURL)
+            entries = try JSONDecoder().decode([DownloadHistoryEntry].self, from: data)
+        } catch {
+            // Unreadable, corrupt, or written by a newer version. Starting
+            // empty is fine, but the next record() would overwrite this
+            // file with a single entry — so move it aside first.
+            let stamp = Int(Date().timeIntervalSince1970)
+            let backup = fileURL.deletingLastPathComponent()
+                .appendingPathComponent("\(fileURL.lastPathComponent).unreadable-\(stamp)")
+            try? FileManager.default.moveItem(at: fileURL, to: backup)
+        }
     }
 
     private func save() {

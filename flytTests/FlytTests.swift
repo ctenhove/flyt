@@ -170,6 +170,69 @@ struct FlytTests {
         #expect(second.entries.map(\.title) == ["A"])
     }
 
+    @Test func unreadableHistoryFileIsMovedAsideNotOverwritten() throws {
+        let url = Self.scratchHistoryURL()
+        try Data("not json".utf8).write(to: url)
+
+        let store = DownloadHistoryStore(fileURL: url)
+        #expect(store.entries.isEmpty)
+        store.record(DownloadHistoryEntry(urlString: "https://youtu.be/a", title: "A", fileName: "a.mp4", thumbnailURLString: nil))
+
+        let siblings = try FileManager.default.contentsOfDirectory(atPath: url.deletingLastPathComponent().path)
+        let backups = siblings.filter { $0.hasPrefix("\(url.lastPathComponent).unreadable-") }
+        #expect(backups.count == 1)
+        let backupURL = url.deletingLastPathComponent().appendingPathComponent(backups[0])
+        #expect(try Data(contentsOf: backupURL) == Data("not json".utf8))
+    }
+
+    // MARK: ScratchFolderRegistry
+
+    private static func scratchFolder(named name: String) throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(name, isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    @Test func sweepDeletesFoldersFromDeadProcessesOnly() throws {
+        let manifest = FileManager.default.temporaryDirectory.appendingPathComponent("flyt-scratch-\(UUID().uuidString).json")
+        let stale = try Self.scratchFolder(named: ".flyt-\(UUID().uuidString)")
+        let live = try Self.scratchFolder(named: ".flyt-\(UUID().uuidString)")
+        defer {
+            try? FileManager.default.removeItem(at: stale)
+            try? FileManager.default.removeItem(at: live)
+        }
+        ScratchFolderRegistry.register(stale, pid: Int32.max, manifestURL: manifest)
+        ScratchFolderRegistry.register(live, manifestURL: manifest)
+
+        ScratchFolderRegistry.sweepStale(manifestURL: manifest)
+
+        #expect(!FileManager.default.fileExists(atPath: stale.path))
+        #expect(FileManager.default.fileExists(atPath: live.path))
+    }
+
+    @Test func sweepNeverDeletesFoldersThatAreNotFlytScratchFolders() throws {
+        let manifest = FileManager.default.temporaryDirectory.appendingPathComponent("flyt-scratch-\(UUID().uuidString).json")
+        let unrelated = try Self.scratchFolder(named: "flyt-unrelated-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: unrelated) }
+        ScratchFolderRegistry.register(unrelated, pid: Int32.max, manifestURL: manifest)
+
+        ScratchFolderRegistry.sweepStale(manifestURL: manifest)
+
+        #expect(FileManager.default.fileExists(atPath: unrelated.path))
+    }
+
+    @Test func unregisteredFoldersAreLeftAloneBySweep() throws {
+        let manifest = FileManager.default.temporaryDirectory.appendingPathComponent("flyt-scratch-\(UUID().uuidString).json")
+        let kept = try Self.scratchFolder(named: ".flyt-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: kept) }
+        ScratchFolderRegistry.register(kept, pid: Int32.max, manifestURL: manifest)
+        ScratchFolderRegistry.unregister(kept, manifestURL: manifest)
+
+        ScratchFolderRegistry.sweepStale(manifestURL: manifest)
+
+        #expect(FileManager.default.fileExists(atPath: kept.path))
+    }
+
     // MARK: VideoFormat.isBroadlyCompatibleCodec
 
     @Test func avcIsBroadlyCompatible() {
