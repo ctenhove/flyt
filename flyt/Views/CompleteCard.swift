@@ -132,6 +132,7 @@ struct CompleteCard: View {
                     .background(Color.flytSky, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
             }
             .buttonStyle(.plain)
+            .fadesWhenWindowInactive()
             .pointingHandCursor()
 
             Button(action: onDownloadAnother) {
