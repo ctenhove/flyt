@@ -20,6 +20,7 @@ struct ContentView: View {
         let id = UUID()
         let urlString: String
         let model: YtDlpModel
+        let settings = DownloadItemSettings()
     }
 
     /// Cards past this count switch the list into a fixed-height scroll
@@ -118,22 +119,18 @@ struct ContentView: View {
                 DownloadItemCard(
                     originalURLString: item.urlString,
                     model: item.model,
+                    settings: item.settings,
                     destinationFolder: destinationFolder,
                     coordinator: coordinator,
                     historyStore: historyStore,
                     onRemove: { remove(item) },
                     onComplete: pulseMark
                 )
-                // Explicit rather than relying on ForEach's own diffing:
-                // `itemsList` wraps this same `cards` view in a ScrollView
-                // once there's more than one item, and without an explicit
-                // id that structural change around it was enough for
-                // SwiftUI to treat an existing card as a brand new view —
-                // silently resetting all its @State (selected formats,
-                // resolution/audio options, options-expanded) the instant
-                // a second item was added, with nothing left to
-                // repopulate it since model.videoInfo hadn't actually
-                // changed to re-trigger that.
+                // Not enough on its own: `itemsList` wraps this same view in
+                // a ScrollView once there's more than one item, and that
+                // structural change still makes SwiftUI rebuild existing
+                // cards, resetting their @State. That's why each card's
+                // configuration lives in `item.settings` instead.
                 .id(item.id)
             }
         }

@@ -12,7 +12,7 @@ import SwiftUI
 /// same time. This is almost exactly what the pre-multi-download
 /// `ContentView` did for its single video — that logic (format selection,
 /// filename handling, the phase state machine) moves here essentially
-/// unchanged, just re-homed to a per-card `@State` instead of the window's.
+/// unchanged, just re-homed to a per-card `DownloadItemSettings` instead of the window's.
 struct DownloadItemCard: View {
     let originalURLString: String
     var model: YtDlpModel
@@ -29,48 +29,7 @@ struct DownloadItemCard: View {
         case fetching, ready, queued, downloading, complete, error
     }
 
-    @State private var selectedVideoFormatID: String?
-    @State private var selectedAudioFormatID: String?
-    @State private var selectedOutputContainer: OutputContainer = .mp4
-    @State private var filename: String = ""
-    @State private var filenameIsCustom = false
-    @State private var optionsExpanded = false
-    @State private var audioOnly = false
-    @State private var lastVideoFormatID: String?
-    @State private var subtitlesEnabled = false
-    @State private var selectedSubtitleLanguageCode: String?
-    /// Mux subtitles into the video file instead of writing a sidecar file.
-    /// Defaults on: embedding is what most people expect from "download
-    /// subtitles" — a loose .srt/.vtt file alongside the video is the
-    /// opt-out, not the default.
-    @State private var embedSubtitles = true
-    /// Name for the sidecar subtitle file (no extension). Follows the video
-    /// filename until the user types their own.
-    @State private var subtitleFilename = ""
-    @State private var subtitleFilenameIsCustom = false
-    @State private var trimEnabled = false
-    @State private var timeRanges: [VideoTimeRange] = []
-    /// Only meaningful with more than one range: concatenate them into a
-    /// single output file instead of one file per range.
-    @State private var mergeSections = false
-
-    @State private var videoFormats: [VideoFormat] = []
-    @State private var audioFormats: [VideoFormat] = []
-    @State private var resolutionOptions: [FormatSelection.ResolutionOption] = []
-    @State private var audioOptions: [FormatSelection.AudioOption] = []
-    @State private var subtitleLanguageOptions: [SubtitleSelection.LanguageOption] = []
-
-    @State private var showingComplete = false
-    @State private var downloadStartedAt: Date?
-    @State private var lastCompletedElapsed: Double?
-
-    /// True while waiting for `coordinator` to free a slot rather than
-    /// actually downloading yet.
-    @State private var isQueued = false
-    /// Whether this card currently holds a slot it must release exactly
-    /// once — guards against double-releasing if `dismiss()` and the
-    /// natural completion handler could otherwise both try to.
-    @State private var hasReservedSlot = false
+    @Bindable var settings: DownloadItemSettings
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -89,68 +48,68 @@ struct DownloadItemCard: View {
         }
         .onChange(of: model.videoInfo) { _, info in
             guard let info else { return }
-            videoFormats = Self.sortedFormats(info.formats) { $0.hasVideo }
-            audioFormats = Self.sortedFormats(info.formats) { $0.isAudioOnly }
-            resolutionOptions = FormatSelection.resolutionOptions(in: videoFormats)
-            audioOptions = FormatSelection.audioOptions(in: audioFormats)
-            subtitleLanguageOptions = SubtitleSelection.languageOptions(
+            settings.videoFormats = Self.sortedFormats(info.formats) { $0.hasVideo }
+            settings.audioFormats = Self.sortedFormats(info.formats) { $0.isAudioOnly }
+            settings.resolutionOptions = FormatSelection.resolutionOptions(in: settings.videoFormats)
+            settings.audioOptions = FormatSelection.audioOptions(in: settings.audioFormats)
+            settings.subtitleLanguageOptions = SubtitleSelection.languageOptions(
                 subtitles: info.subtitles,
                 automaticCaptions: info.automaticCaptions
             )
-            if selectedVideoFormatID == nil {
-                selectedVideoFormatID = videoFormats.first?.id
+            if settings.selectedVideoFormatID == nil {
+                settings.selectedVideoFormatID = settings.videoFormats.first?.id
             }
-            if selectedAudioFormatID == nil {
-                selectedAudioFormatID = audioFormats.first?.id
+            if settings.selectedAudioFormatID == nil {
+                settings.selectedAudioFormatID = settings.audioFormats.first?.id
             }
             // A code left over from a previous fetch may no longer be on
             // offer; an unmatched code would silently download no subtitles.
-            if !subtitleLanguageOptions.contains(where: { $0.code == selectedSubtitleLanguageCode }) {
-                selectedSubtitleLanguageCode = subtitleLanguageOptions.first?.code
+            if !settings.subtitleLanguageOptions.contains(where: { $0.code == settings.selectedSubtitleLanguageCode }) {
+                settings.selectedSubtitleLanguageCode = settings.subtitleLanguageOptions.first?.code
             }
-            if subtitleLanguageOptions.isEmpty {
-                subtitlesEnabled = false
+            if settings.subtitleLanguageOptions.isEmpty {
+                settings.subtitlesEnabled = false
             }
-            if !filenameIsCustom {
-                filename = FilenamePolicy.sanitize(info.title)
+            if !settings.filenameIsCustom {
+                settings.filename = FilenamePolicy.sanitize(info.title)
             }
         }
-        .onChange(of: audioOnly) { _, isOn in
+        .onChange(of: settings.audioOnly) { _, isOn in
             // embedSubtitles is left as-is while audioOnly is on: the toggle
             // is hidden (there's no video track to embed into) and
             // attemptStart() already gates on `&& !audioOnly`, so its
             // stored value only matters again once a video track returns.
             if isOn {
-                lastVideoFormatID = selectedVideoFormatID
-                selectedVideoFormatID = nil
+                settings.lastVideoFormatID = settings.selectedVideoFormatID
+                settings.selectedVideoFormatID = nil
             } else {
-                selectedVideoFormatID = lastVideoFormatID ?? videoFormats.first?.id
+                settings.selectedVideoFormatID = settings.lastVideoFormatID ?? settings.videoFormats.first?.id
             }
         }
-        .onChange(of: trimEnabled) { _, isOn in
-            guard isOn, timeRanges.isEmpty, let duration = model.videoInfo?.duration else { return }
+        .onChange(of: settings.trimEnabled) { _, isOn in
+            guard isOn, settings.timeRanges.isEmpty, let duration = model.videoInfo?.duration else { return }
             var range = VideoTimeRange(start: 0, end: 30)
             range.clamp(to: duration)
-            timeRanges = [range]
+            settings.timeRanges = [range]
         }
         .onChange(of: coordinator.activeCount) {
-            guard isQueued else { return }
+            guard settings.isQueued else { return }
             attemptStart()
         }
         .onChange(of: model.isDownloading) { wasDownloading, isDownloading in
             guard wasDownloading, !isDownloading else { return }
-            if hasReservedSlot {
+            if settings.hasReservedSlot {
                 coordinator.releaseSlot()
-                hasReservedSlot = false
+                settings.hasReservedSlot = false
             }
-            defer { downloadStartedAt = nil }
+            defer { settings.downloadStartedAt = nil }
             // A cancelled download also leaves errorMessage nil, so that
             // check alone can't tell a genuine completion apart from a cancel.
             guard model.errorMessage == nil, !model.wasCancelled else { return }
-            if let downloadStartedAt {
-                lastCompletedElapsed = Date().timeIntervalSince(downloadStartedAt)
+            if let startedAt = settings.downloadStartedAt {
+                settings.lastCompletedElapsed = Date().timeIntervalSince(startedAt)
             }
-            showingComplete = true
+            settings.showingComplete = true
             if let file = model.downloadedFiles.first ?? model.lastDownloadedFile, let info = model.videoInfo {
                 historyStore.record(DownloadHistoryEntry(
                     urlString: originalURLString,
@@ -166,10 +125,10 @@ struct DownloadItemCard: View {
     // MARK: Phase
 
     private var phase: ItemPhase {
-        if showingComplete { return .complete }
+        if settings.showingComplete { return .complete }
         if model.errorMessage != nil { return .error }
         if model.isDownloading { return .downloading }
-        if isQueued { return .queued }
+        if settings.isQueued { return .queued }
         if model.videoInfo != nil { return .ready }
         return .fetching
     }
@@ -200,43 +159,43 @@ struct DownloadItemCard: View {
             if let info = model.videoInfo {
                 VideoSummaryCard(info: info)
 
-                if optionsExpanded {
+                if settings.optionsExpanded {
                     OptionsCard(
                         filename: filenameBinding,
                         fileExtension: previewExtension,
-                        filenameIsCustom: filenameIsCustom,
+                        filenameIsCustom: settings.filenameIsCustom,
                         onResetFilename: resetFilenameToTitle,
-                        resolutionOptions: resolutionOptions,
+                        resolutionOptions: settings.resolutionOptions,
                         selectedHeight: heightBinding,
-                        selectedContainer: $selectedOutputContainer,
-                        audioOptions: audioOptions,
+                        selectedContainer: $settings.selectedOutputContainer,
+                        audioOptions: settings.audioOptions,
                         selectedAudioExt: audioExtBinding,
-                        audioOnly: $audioOnly,
-                        subtitleLanguageOptions: subtitleLanguageOptions,
-                        subtitlesEnabled: $subtitlesEnabled,
-                        selectedSubtitleLanguageCode: $selectedSubtitleLanguageCode,
-                        embedSubtitles: $embedSubtitles,
+                        audioOnly: $settings.audioOnly,
+                        subtitleLanguageOptions: settings.subtitleLanguageOptions,
+                        subtitlesEnabled: $settings.subtitlesEnabled,
+                        selectedSubtitleLanguageCode: $settings.selectedSubtitleLanguageCode,
+                        embedSubtitles: $settings.embedSubtitles,
                         subtitleFilename: subtitleFilenameBinding,
-                        subtitleFilenameIsCustom: subtitleFilenameIsCustom,
-                        onResetSubtitleFilename: { subtitleFilenameIsCustom = false },
+                        subtitleFilenameIsCustom: settings.subtitleFilenameIsCustom,
+                        onResetSubtitleFilename: { settings.subtitleFilenameIsCustom = false },
                         duration: info.duration,
-                        trimEnabled: $trimEnabled,
-                        timeRanges: $timeRanges,
-                        mergeSections: $mergeSections,
-                        onCollapse: { optionsExpanded = false }
+                        trimEnabled: $settings.trimEnabled,
+                        timeRanges: $settings.timeRanges,
+                        mergeSections: $settings.mergeSections,
+                        onCollapse: { settings.optionsExpanded = false }
                     )
                 } else {
                     FilenameField(
                         filename: filenameBinding,
                         fileExtension: previewExtension,
-                        isCustom: filenameIsCustom,
+                        isCustom: settings.filenameIsCustom,
                         onReset: resetFilenameToTitle,
                         style: .main
                     )
                     OptionsSummaryRow(
                         segments: summarySegments,
                         estimatedSizeText: estimatedSizeText,
-                        onTap: { optionsExpanded = true }
+                        onTap: { settings.optionsExpanded = true }
                     )
                 }
 
@@ -270,11 +229,11 @@ struct DownloadItemCard: View {
                     savedFiles: model.downloadedFiles,
                     thumbnailURLString: model.videoInfo?.thumbnail,
                     resolutionLabel: resolutionSummaryLabel,
-                    containerLabel: willMerge ? selectedOutputContainer.label : nil,
+                    containerLabel: willMerge ? settings.selectedOutputContainer.label : nil,
                     audioLabel: selectedAudioFormat?.ext,
                     destinationFolder: destinationFolder,
                     savedSizeBytes: estimatedSizeBytes,
-                    elapsedSeconds: lastCompletedElapsed,
+                    elapsedSeconds: settings.lastCompletedElapsed,
                     onShowInFinder: { NSWorkspace.shared.activateFileViewerSelecting(model.downloadedFiles) },
                     onDownloadAnother: dismiss
                 )
@@ -322,20 +281,20 @@ struct DownloadItemCard: View {
     }
 
     private var selectedVideoFormat: VideoFormat? {
-        videoFormats.first { $0.id == selectedVideoFormatID }
+        settings.videoFormats.first { $0.id == settings.selectedVideoFormatID }
     }
 
     private var selectedAudioFormat: VideoFormat? {
-        audioFormats.first { $0.id == selectedAudioFormatID }
+        settings.audioFormats.first { $0.id == settings.selectedAudioFormatID }
     }
 
     private var selectedSubtitleLanguage: SubtitleSelection.LanguageOption? {
-        guard subtitlesEnabled else { return nil }
-        return subtitleLanguageOptions.first { $0.code == selectedSubtitleLanguageCode }
+        guard settings.subtitlesEnabled else { return nil }
+        return settings.subtitleLanguageOptions.first { $0.code == settings.selectedSubtitleLanguageCode }
     }
 
     private var willMerge: Bool {
-        selectedVideoFormatID != nil && selectedAudioFormatID != nil
+        settings.selectedVideoFormatID != nil && settings.selectedAudioFormatID != nil
     }
 
     /// "Video"/"Audio" while a two-stream (merged) download is fetching one
@@ -352,10 +311,10 @@ struct DownloadItemCard: View {
     }
 
     private var previewExtension: String {
-        if willMerge { return selectedOutputContainer.rawValue }
+        if willMerge { return settings.selectedOutputContainer.rawValue }
         if let format = selectedVideoFormat { return format.ext }
         if let format = selectedAudioFormat { return format.ext }
-        return selectedOutputContainer.rawValue
+        return settings.selectedOutputContainer.rawValue
     }
 
     private var resolutionSummaryLabel: String? {
@@ -365,11 +324,11 @@ struct DownloadItemCard: View {
     private var summarySegments: [String] {
         var segments: [String] = []
         if let resolutionSummaryLabel { segments.append(resolutionSummaryLabel) }
-        if selectedVideoFormatID != nil { segments.append(selectedOutputContainer.label.uppercased()) }
+        if settings.selectedVideoFormatID != nil { segments.append(settings.selectedOutputContainer.label.uppercased()) }
         if let ext = selectedAudioFormat?.ext { segments.append(ext.uppercased()) }
         if let selectedSubtitleLanguage { segments.append("\(selectedSubtitleLanguage.code.uppercased()) CC") }
-        if trimEnabled, !timeRanges.isEmpty {
-            segments.append(timeRanges.count > 1 ? "\(timeRanges.count) CLIPS" : "TRIMMED")
+        if settings.trimEnabled, !settings.timeRanges.isEmpty {
+            segments.append(settings.timeRanges.count > 1 ? "\(settings.timeRanges.count) CLIPS" : "TRIMMED")
         }
         return segments
     }
@@ -384,11 +343,11 @@ struct DownloadItemCard: View {
             audio: selectedAudioFormat,
             durationSeconds: model.videoInfo?.duration
         ) else { return nil }
-        guard trimEnabled, !timeRanges.isEmpty,
+        guard settings.trimEnabled, !settings.timeRanges.isEmpty,
               let fullDuration = model.videoInfo?.duration, fullDuration > 0 else {
             return fullEstimate
         }
-        let trimmedDuration = timeRanges.reduce(0) { $0 + max(0, $1.end - $1.start) }
+        let trimmedDuration = settings.timeRanges.reduce(0) { $0 + max(0, $1.end - $1.start) }
         return Int64(Double(fullEstimate) * (trimmedDuration / fullDuration))
     }
 
@@ -400,8 +359,8 @@ struct DownloadItemCard: View {
         Binding(
             get: { selectedVideoFormat?.height },
             set: { newHeight in
-                guard let newHeight, let match = resolutionOptions.first(where: { $0.height == newHeight }) else { return }
-                selectedVideoFormatID = match.format.id
+                guard let newHeight, let match = settings.resolutionOptions.first(where: { $0.height == newHeight }) else { return }
+                settings.selectedVideoFormatID = match.format.id
             }
         )
     }
@@ -410,18 +369,18 @@ struct DownloadItemCard: View {
         Binding(
             get: { selectedAudioFormat?.ext },
             set: { newExt in
-                guard let newExt, let match = audioOptions.first(where: { $0.ext == newExt }) else { return }
-                selectedAudioFormatID = match.format.id
+                guard let newExt, let match = settings.audioOptions.first(where: { $0.ext == newExt }) else { return }
+                settings.selectedAudioFormatID = match.format.id
             }
         )
     }
 
     private var filenameBinding: Binding<String> {
         Binding(
-            get: { filename },
+            get: { settings.filename },
             set: { newValue in
-                filename = newValue
-                filenameIsCustom = true
+                settings.filename = newValue
+                settings.filenameIsCustom = true
             }
         )
     }
@@ -430,10 +389,10 @@ struct DownloadItemCard: View {
     /// step by default; typing latches `subtitleFilenameIsCustom`.
     private var subtitleFilenameBinding: Binding<String> {
         Binding(
-            get: { subtitleFilenameIsCustom ? subtitleFilename : filename },
+            get: { settings.subtitleFilenameIsCustom ? settings.subtitleFilename : settings.filename },
             set: {
-                subtitleFilename = $0
-                subtitleFilenameIsCustom = true
+                settings.subtitleFilename = $0
+                settings.subtitleFilenameIsCustom = true
             }
         )
     }
@@ -441,9 +400,9 @@ struct DownloadItemCard: View {
     // MARK: Actions
 
     private func resetFilenameToTitle() {
-        filenameIsCustom = false
+        settings.filenameIsCustom = false
         if let title = model.videoInfo?.title {
-            filename = FilenamePolicy.sanitize(title)
+            settings.filename = FilenamePolicy.sanitize(title)
         }
     }
 
@@ -456,15 +415,15 @@ struct DownloadItemCard: View {
     /// the parent to drop this card from the list.
     private func dismiss() {
         model.cancel()
-        if hasReservedSlot {
+        if settings.hasReservedSlot {
             coordinator.releaseSlot()
-            hasReservedSlot = false
+            settings.hasReservedSlot = false
         }
         onRemove()
     }
 
     private func requestDownload() {
-        guard !isQueued, !model.isDownloading else { return }
+        guard !settings.isQueued, !model.isDownloading else { return }
         attemptStart()
     }
 
@@ -475,45 +434,45 @@ struct DownloadItemCard: View {
         // Checked before a slot is claimed: returning early afterwards
         // would hold the slot for a download that never runs.
         guard let info = model.videoInfo else {
-            isQueued = false
+            settings.isQueued = false
             return
         }
         guard coordinator.tryReserveSlot() else {
-            isQueued = true
+            settings.isQueued = true
             return
         }
-        isQueued = false
-        hasReservedSlot = true
-        let base = filename.isEmpty ? FilenamePolicy.sanitize(info.title) : FilenamePolicy.sanitize(filename)
+        settings.isQueued = false
+        settings.hasReservedSlot = true
+        let base = settings.filename.isEmpty ? FilenamePolicy.sanitize(info.title) : FilenamePolicy.sanitize(settings.filename)
         let uniqueBase = FilenamePolicy.uniqueFilename(
             base: base.isEmpty ? "download" : base,
             in: destinationFolder,
-            sectioned: trimEnabled && timeRanges.count > 1
+            sectioned: settings.trimEnabled && settings.timeRanges.count > 1
         )
-        let sidecarBase = FilenamePolicy.sanitize(subtitleFilenameIsCustom ? subtitleFilename : "")
+        let sidecarBase = FilenamePolicy.sanitize(settings.subtitleFilenameIsCustom ? settings.subtitleFilename : "")
         let uniqueSubtitleBase = sidecarBase.isEmpty
             ? ""
             : FilenamePolicy.uniqueFilename(base: sidecarBase, in: destinationFolder)
-        downloadStartedAt = Date()
+        settings.downloadStartedAt = Date()
         let started = model.download(
             urlString: originalURLString,
-            videoFormatId: selectedVideoFormatID,
-            audioFormatId: selectedAudioFormatID,
-            outputContainer: selectedOutputContainer,
+            videoFormatId: settings.selectedVideoFormatID,
+            audioFormatId: settings.selectedAudioFormatID,
+            outputContainer: settings.selectedOutputContainer,
             destinationFolder: destinationFolder,
             fileName: uniqueBase,
             subtitleLanguage: selectedSubtitleLanguage,
-            embedSubtitles: embedSubtitles && !audioOnly,
+            embedSubtitles: settings.embedSubtitles && !settings.audioOnly,
             subtitleFileName: uniqueSubtitleBase,
-            timeRanges: trimEnabled ? timeRanges : [],
-            mergeSections: mergeSections
+            timeRanges: settings.trimEnabled ? settings.timeRanges : [],
+            mergeSections: settings.mergeSections
         )
         // No download means isDownloading never flips, so the observer
         // that normally releases the slot would never fire.
         if !started {
             coordinator.releaseSlot()
-            hasReservedSlot = false
-            downloadStartedAt = nil
+            settings.hasReservedSlot = false
+            settings.downloadStartedAt = nil
         }
     }
 }
