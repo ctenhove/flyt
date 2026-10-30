@@ -492,7 +492,8 @@ struct ContentView: View {
         let base = filename.isEmpty ? FilenamePolicy.sanitize(info.title) : FilenamePolicy.sanitize(filename)
         let uniqueBase = FilenamePolicy.uniqueFilename(
             base: base.isEmpty ? "download" : base,
-            in: destinationFolder
+            in: destinationFolder,
+            sectioned: trimEnabled && timeRanges.count > 1
         )
         downloadStartedAt = Date()
         model.download(

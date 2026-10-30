@@ -46,11 +46,17 @@ enum FilenamePolicy {
     /// because that guess turned out wrong — at the cost of occasionally
     /// adding a "(2)" that a perfectly accurate guess wouldn't have needed,
     /// which is the safer direction to be wrong in.
-    static func uniqueFilename(base: String, in directory: URL) -> String {
+    ///
+    /// With `sectioned`, also treats " [" after `base` as a collision: trimmed
+    /// multi-range downloads write `base [start-end].ext`, which the plain
+    /// `base.` check would never see.
+    static func uniqueFilename(base: String, in directory: URL, sectioned: Bool = false) -> String {
         let existingNames = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
         var candidate = base
         var suffix = 1
-        while existingNames.contains(where: { $0.hasPrefix("\(candidate).") }) {
+        while existingNames.contains(where: {
+            $0.hasPrefix("\(candidate).") || (sectioned && $0.hasPrefix("\(candidate) ["))
+        }) {
             suffix += 1
             candidate = "\(base) (\(suffix))"
         }

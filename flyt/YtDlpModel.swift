@@ -301,6 +301,11 @@ final class YtDlpModel {
     /// actor. `Process.terminate()` is safe to call from any thread, so this
     /// is marked unsafe rather than hopping actors on every process start/stop.
     private nonisolated(unsafe) var activeProcess: Process?
+    /// Guards `activeProcess` and `cancelRequested`, which are touched from
+    /// both the main actor (`cancel()`) and the background process runners.
+    private nonisolated let processLock = NSLock()
+    /// Set by `cancel()`; cleared when a new fetch or download begins.
+    private nonisolated(unsafe) var cancelRequested = false
 
     /// The user's Downloads folder, offered as the default destination.
     nonisolated static var defaultDownloadsDirectory: URL {
@@ -342,6 +347,7 @@ final class YtDlpModel {
     /// on `runVersion()`.
     func fetchInfo(for urlString: String) {
         guard !isBusy else { return }
+        resetCancellation()
         isLoading = true
         errorMessage = nil
         videoInfo = nil
@@ -399,6 +405,7 @@ final class YtDlpModel {
         mergeSections: Bool = false
     ) {
         guard !isBusy else { return }
+        resetCancellation()
         isDownloading = true
         downloadProgress = 0.0
         downloadedSizeText = nil
@@ -456,9 +463,23 @@ final class YtDlpModel {
         Task {
             do {
                 try await runWithProgress(args: args)
+                // yt-dlp skips a section whose output path already exists
+                // ("already downloaded") without printing a Destination
+                // line, so a short count means clips are missing or stale.
+                // Fail loudly instead of reporting (or merging) a partial set.
+                if expectedSectionCount > 0, sectionOutputFiles.count != expectedSectionCount {
+                    throw YtDlpError.processFailed(
+                        "Only \(sectionOutputFiles.count) of \(expectedSectionCount) clips were downloaded. "
+                        + "Some may already exist in the destination folder — rename or remove them and try again."
+                    )
+                }
                 if mergeSections, sectionOutputFiles.count > 1 {
                     downloadPhase = .merging
-                    let mergedFileName = fileName.isEmpty ? "download" : FilenamePolicy.sanitize(fileName)
+                    // Same fallback the section files themselves used: the
+                    // video title when no name was given.
+                    let mergedFileName = fileName.isEmpty
+                        ? (FilenamePolicy.sanitize(videoInfo?.title ?? "").nonEmpty ?? "download")
+                        : FilenamePolicy.sanitize(fileName)
                     let mergedURL = try await concatenateSections(
                         sectionOutputFiles,
                         finalFileName: mergedFileName,
@@ -488,7 +509,35 @@ final class YtDlpModel {
     /// Cancels the in-flight fetch or download, if any, by terminating the
     /// underlying yt-dlp process. Safe to call even if nothing is running.
     func cancel() {
+        processLock.lock()
+        defer { processLock.unlock() }
+        cancelRequested = true
         activeProcess?.terminate()
+    }
+
+    /// Starts `process` and records it as the one `cancel()` should stop,
+    /// atomically with respect to `cancel()`. A cancel that lands before the
+    /// process is registered is remembered in `cancelRequested` and honoured
+    /// here, so it can't slip through the gap between `run()` and the
+    /// assignment (and never calls `terminate()` on a process not yet running).
+    private nonisolated func launch(_ process: Process) throws {
+        processLock.lock()
+        defer { processLock.unlock() }
+        if cancelRequested { throw YtDlpError.cancelled }
+        try process.run()
+        activeProcess = process
+    }
+
+    private func resetCancellation() {
+        processLock.lock()
+        cancelRequested = false
+        processLock.unlock()
+    }
+
+    private nonisolated func clearActiveProcess() {
+        processLock.lock()
+        activeProcess = nil
+        processLock.unlock()
     }
 
     /// Sanitizes a user-supplied name for safe use as a path segment in
@@ -533,22 +582,25 @@ final class YtDlpModel {
 
         let process = Process()
         process.executableURL = dependencyManager.ffmpegURL
-        process.arguments = ["-y", "-f", "concat", "-safe", "0", "-i", listURL.path, "-c", "copy", finalURL.path]
+        process.arguments = ["-y", "-loglevel", "error", "-nostats", "-f", "concat", "-safe", "0", "-i", listURL.path, "-c", "copy", finalURL.path]
         let errorPipe = Pipe()
         process.standardOutput = Pipe()
         process.standardError = errorPipe
-        try process.run()
         // Tracked the same way runProcess tracks the yt-dlp process, so
         // cancel() can still stop something while this step is running.
-        activeProcess = process
-        defer { activeProcess = nil }
+        try launch(process)
+        defer { clearActiveProcess() }
+        // Drain stderr before waiting: ffmpeg's banner and progress output
+        // can exceed the pipe buffer, and a child blocked on a full pipe
+        // never exits. Reads until ffmpeg closes stderr (i.e. exits).
+        let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
 
         guard process.terminationStatus == 0 else {
             if process.terminationReason == .uncaughtSignal, process.terminationStatus == SIGTERM {
                 throw YtDlpError.cancelled
             }
-            let detail = String(data: errorPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)
+            let detail = String(data: errorData, encoding: .utf8)
             throw YtDlpError.processFailed(detail?.isEmpty == false ? detail! : "Merging sections failed.")
         }
 
@@ -604,9 +656,8 @@ final class YtDlpModel {
         process.standardOutput = outputPipe
         process.standardError = errorPipe
 
-        try process.run()
-        activeProcess = process
-        defer { activeProcess = nil }
+        try launch(process)
+        defer { clearActiveProcess() }
 
         // Drain stderr concurrently with stdout so the child can't block
         // on a full pipe buffer, keeping the text to report if yt-dlp fails.
@@ -869,4 +920,8 @@ final class YtDlpModel {
         }
         return nil
     }
+}
+
+private extension String {
+    var nonEmpty: String? { isEmpty ? nil : self }
 }
