@@ -45,6 +45,11 @@ struct ContentView: View {
     /// filename until the user types their own.
     @State private var subtitleFilename = ""
     @State private var subtitleFilenameIsCustom = false
+    @State private var trimEnabled = false
+    @State private var timeRanges: [VideoTimeRange] = []
+    /// Only meaningful with more than one range: concatenate them into a
+    /// single output file instead of one file per range.
+    @State private var mergeSections = false
 
     @State private var showingComplete = false
     @State private var downloadStartedAt: Date?
@@ -139,6 +144,12 @@ struct ContentView: View {
                 selectedVideoFormatID = lastVideoFormatID ?? videoFormats.first?.id
             }
         }
+        .onChange(of: trimEnabled) { _, isOn in
+            guard isOn, timeRanges.isEmpty, let duration = model.videoInfo?.duration else { return }
+            var range = VideoTimeRange(start: 0, end: 30)
+            range.clamp(to: duration)
+            timeRanges = [range]
+        }
         .onChange(of: model.isDownloading) { wasDownloading, isDownloading in
             guard wasDownloading, !isDownloading else { return }
             defer { downloadStartedAt = nil }
@@ -222,6 +233,10 @@ struct ContentView: View {
                         subtitleFilename: subtitleFilenameBinding,
                         subtitleFilenameIsCustom: subtitleFilenameIsCustom,
                         onResetSubtitleFilename: { subtitleFilenameIsCustom = false },
+                        duration: info.duration,
+                        trimEnabled: $trimEnabled,
+                        timeRanges: $timeRanges,
+                        mergeSections: $mergeSections,
                         onCollapse: { optionsExpanded = false }
                     )
                 } else {
@@ -260,9 +275,9 @@ struct ContentView: View {
             }
 
         case .complete:
-            if let file = model.lastDownloadedFile {
+            if !model.downloadedFiles.isEmpty {
                 CompleteCard(
-                    savedFileURL: file,
+                    savedFiles: model.downloadedFiles,
                     thumbnailURLString: model.videoInfo?.thumbnail,
                     resolutionLabel: resolutionSummaryLabel,
                     containerLabel: willMerge ? selectedOutputContainer.label : nil,
@@ -270,7 +285,7 @@ struct ContentView: View {
                     destinationFolder: destinationFolder,
                     savedSizeBytes: estimatedSizeBytes,
                     elapsedSeconds: lastCompletedElapsed,
-                    onShowInFinder: { NSWorkspace.shared.activateFileViewerSelecting([file]) },
+                    onShowInFinder: { NSWorkspace.shared.activateFileViewerSelecting(model.downloadedFiles) },
                     onDownloadAnother: resetForNewDownload
                 )
             }
@@ -321,16 +336,18 @@ struct ContentView: View {
         selectedVideoFormatID != nil && selectedAudioFormatID != nil
     }
 
-    /// "Video"/"Audio" while a two-stream (merged) download is fetching
-    /// one of its tracks, so the progress bar's restart from 100% back to
-    /// 0% between them reads as a new stream starting rather than a
-    /// glitch. nil for a single-stream download, and during merging
-    /// itself (which has its own dedicated row, not a percentage).
+    /// "Video"/"Audio" while a two-stream (merged) download is fetching one
+    /// of its tracks, or "Section N of M" while trimming — in both cases
+    /// the progress bar's restart from 100% back to 0% between
+    /// tracks/sections needs a label or it reads as a glitch rather than a
+    /// new stream/section starting. nil for a single-stream, single-range
+    /// download, and during merging itself (its own dedicated row, not a
+    /// percentage).
     private var downloadPhaseLabel: String? {
-        guard willMerge else { return nil }
         switch model.downloadPhase {
-        case .downloadingVideo: return "Video"
-        case .downloadingAudio: return "Audio"
+        case .downloadingVideo: return willMerge ? "Video" : nil
+        case .downloadingAudio: return willMerge ? "Audio" : nil
+        case .trimmingSection(let index, let total): return total > 1 ? "Section \(index) of \(total)" : nil
         case .idle, .merging: return nil
         }
     }
@@ -354,15 +371,28 @@ struct ContentView: View {
         if selectedVideoFormatID != nil { segments.append(selectedOutputContainer.label.uppercased()) }
         if let ext = selectedAudioFormat?.ext { segments.append(ext.uppercased()) }
         if let selectedSubtitleLanguage { segments.append("\(selectedSubtitleLanguage.code.uppercased()) CC") }
+        if trimEnabled, !timeRanges.isEmpty {
+            segments.append(timeRanges.count > 1 ? "\(timeRanges.count) CLIPS" : "TRIMMED")
+        }
         return segments
     }
 
+    /// The full-video estimate scaled down to the trimmed portion when
+    /// trimming is active: a known `filesize`/`filesizeApprox` is for the
+    /// *whole* stream, so without this a 10-second clip out of an hour-long
+    /// video would still show the full video's size.
     private var estimatedSizeBytes: Int64? {
-        FormatSelection.estimatedSizeBytes(
+        guard let fullEstimate = FormatSelection.estimatedSizeBytes(
             video: selectedVideoFormat,
             audio: selectedAudioFormat,
             durationSeconds: model.videoInfo?.duration
-        )
+        ) else { return nil }
+        guard trimEnabled, !timeRanges.isEmpty,
+              let fullDuration = model.videoInfo?.duration, fullDuration > 0 else {
+            return fullEstimate
+        }
+        let trimmedDuration = timeRanges.reduce(0) { $0 + max(0, $1.end - $1.start) }
+        return Int64(Double(fullEstimate) * (trimmedDuration / fullDuration))
     }
 
     private var estimatedSizeText: String? {
@@ -451,6 +481,9 @@ struct ContentView: View {
         embedSubtitles = true
         subtitleFilename = ""
         subtitleFilenameIsCustom = false
+        trimEnabled = false
+        timeRanges = []
+        mergeSections = false
     }
 
     /// Shows the video filename until the user edits it, so the two stay in
@@ -527,7 +560,8 @@ struct ContentView: View {
         let base = filename.isEmpty ? FilenamePolicy.sanitize(info.title) : FilenamePolicy.sanitize(filename)
         let uniqueBase = FilenamePolicy.uniqueFilename(
             base: base.isEmpty ? "download" : base,
-            in: destinationFolder
+            in: destinationFolder,
+            sectioned: trimEnabled && timeRanges.count > 1
         )
         let sidecarBase = FilenamePolicy.sanitize(subtitleFilenameIsCustom ? subtitleFilename : "")
         let uniqueSubtitleBase = sidecarBase.isEmpty
@@ -543,7 +577,9 @@ struct ContentView: View {
             fileName: uniqueBase,
             subtitleLanguage: selectedSubtitleLanguage,
             embedSubtitles: embedSubtitles && !audioOnly,
-            subtitleFileName: uniqueSubtitleBase
+            subtitleFileName: uniqueSubtitleBase,
+            timeRanges: trimEnabled ? timeRanges : [],
+            mergeSections: mergeSections
         )
     }
 
