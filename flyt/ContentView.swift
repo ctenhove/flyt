@@ -34,6 +34,17 @@ struct ContentView: View {
     @State private var audioOnly = false
     /// The video format to restore when "Audio only" is turned back off.
     @State private var lastVideoFormatID: String?
+    @State private var subtitlesEnabled = false
+    @State private var selectedSubtitleLanguageCode: String?
+    /// Mux subtitles into the video file instead of writing a sidecar file.
+    /// Defaults on: embedding is what most people expect from "download
+    /// subtitles" — a loose .srt/.vtt file alongside the video is the
+    /// opt-out, not the default.
+    @State private var embedSubtitles = true
+    /// Name for the sidecar subtitle file (no extension). Follows the video
+    /// filename until the user types their own.
+    @State private var subtitleFilename = ""
+    @State private var subtitleFilenameIsCustom = false
     @State private var trimEnabled = false
     @State private var timeRanges: [VideoTimeRange] = []
     /// Only meaningful with more than one range: concatenate them into a
@@ -63,6 +74,7 @@ struct ContentView: View {
     /// change once per fetch.
     @State private var resolutionOptions: [FormatSelection.ResolutionOption] = []
     @State private var audioOptions: [FormatSelection.AudioOption] = []
+    @State private var subtitleLanguageOptions: [SubtitleSelection.LanguageOption] = []
 
     /// Debounces auto-fetch so a pasted/dropped link fetches automatically
     /// (README §4) without spawning a yt-dlp process on every keystroke
@@ -98,17 +110,33 @@ struct ContentView: View {
             audioFormats = Self.sortedFormats(info.formats) { $0.isAudioOnly }
             resolutionOptions = FormatSelection.resolutionOptions(in: videoFormats)
             audioOptions = FormatSelection.audioOptions(in: audioFormats)
+            subtitleLanguageOptions = SubtitleSelection.languageOptions(
+                subtitles: info.subtitles,
+                automaticCaptions: info.automaticCaptions
+            )
             if selectedVideoFormatID == nil {
                 selectedVideoFormatID = videoFormats.first?.id
             }
             if selectedAudioFormatID == nil {
                 selectedAudioFormatID = audioFormats.first?.id
             }
+            // A code left over from a previous fetch may no longer be on
+            // offer; an unmatched code would silently download no subtitles.
+            if !subtitleLanguageOptions.contains(where: { $0.code == selectedSubtitleLanguageCode }) {
+                selectedSubtitleLanguageCode = subtitleLanguageOptions.first?.code
+            }
+            if subtitleLanguageOptions.isEmpty {
+                subtitlesEnabled = false
+            }
             if !filenameIsCustom {
                 filename = FilenamePolicy.sanitize(info.title)
             }
         }
         .onChange(of: audioOnly) { _, isOn in
+            // embedSubtitles is left as-is while audioOnly is on: the toggle
+            // is hidden (there's no video track to embed into) and
+            // startDownload() already gates on `&& !audioOnly`, so its
+            // stored value only matters again once a video track returns.
             if isOn {
                 lastVideoFormatID = selectedVideoFormatID
                 selectedVideoFormatID = nil
@@ -198,6 +226,13 @@ struct ContentView: View {
                         audioOptions: audioOptions,
                         selectedAudioExt: audioExtBinding,
                         audioOnly: $audioOnly,
+                        subtitleLanguageOptions: subtitleLanguageOptions,
+                        subtitlesEnabled: $subtitlesEnabled,
+                        selectedSubtitleLanguageCode: $selectedSubtitleLanguageCode,
+                        embedSubtitles: $embedSubtitles,
+                        subtitleFilename: subtitleFilenameBinding,
+                        subtitleFilenameIsCustom: subtitleFilenameIsCustom,
+                        onResetSubtitleFilename: { subtitleFilenameIsCustom = false },
                         duration: info.duration,
                         trimEnabled: $trimEnabled,
                         timeRanges: $timeRanges,
@@ -268,9 +303,18 @@ struct ContentView: View {
 
     // MARK: Derived selection state
 
-    /// Filters and sorts `formats` best-quality-first.
+    /// Filters and sorts `formats` best-quality-first. When two formats tie
+    /// on quality (a common case: the same resolution/bitrate offered over
+    /// both plain HTTP and HLS), prefers the one with reliable progress
+    /// reporting — see `VideoFormat.hasReliableProgress` — so the default
+    /// pick (the array's first element) doesn't default into a format whose
+    /// download UI shows a jumpy size estimate for no quality benefit.
     private static func sortedFormats(_ formats: [VideoFormat], where predicate: (VideoFormat) -> Bool) -> [VideoFormat] {
-        formats.filter(predicate).sorted { $0.qualityRank > $1.qualityRank }
+        formats.filter(predicate).sorted {
+            $0.qualityRank != $1.qualityRank
+                ? $0.qualityRank > $1.qualityRank
+                : $0.hasReliableProgress && !$1.hasReliableProgress
+        }
     }
 
     private var selectedVideoFormat: VideoFormat? {
@@ -279,6 +323,11 @@ struct ContentView: View {
 
     private var selectedAudioFormat: VideoFormat? {
         audioFormats.first { $0.id == selectedAudioFormatID }
+    }
+
+    private var selectedSubtitleLanguage: SubtitleSelection.LanguageOption? {
+        guard subtitlesEnabled else { return nil }
+        return subtitleLanguageOptions.first { $0.code == selectedSubtitleLanguageCode }
     }
 
     /// True when both a video and an audio track are selected, meaning
@@ -321,6 +370,7 @@ struct ContentView: View {
         if let resolutionSummaryLabel { segments.append(resolutionSummaryLabel) }
         if selectedVideoFormatID != nil { segments.append(selectedOutputContainer.label.uppercased()) }
         if let ext = selectedAudioFormat?.ext { segments.append(ext.uppercased()) }
+        if let selectedSubtitleLanguage { segments.append("\(selectedSubtitleLanguage.code.uppercased()) CC") }
         if trimEnabled, !timeRanges.isEmpty {
             segments.append(timeRanges.count > 1 ? "\(timeRanges.count) CLIPS" : "TRIMMED")
         }
@@ -425,9 +475,27 @@ struct ContentView: View {
         audioOptions = []
         optionsExpanded = false
         audioOnly = false
+        subtitleLanguageOptions = []
+        subtitlesEnabled = false
+        selectedSubtitleLanguageCode = nil
+        embedSubtitles = true
+        subtitleFilename = ""
+        subtitleFilenameIsCustom = false
         trimEnabled = false
         timeRanges = []
         mergeSections = false
+    }
+
+    /// Shows the video filename until the user edits it, so the two stay in
+    /// step by default; typing latches `subtitleFilenameIsCustom`.
+    private var subtitleFilenameBinding: Binding<String> {
+        Binding(
+            get: { subtitleFilenameIsCustom ? subtitleFilename : filename },
+            set: {
+                subtitleFilename = $0
+                subtitleFilenameIsCustom = true
+            }
+        )
     }
 
     private func resetFilenameToTitle() {
@@ -495,6 +563,10 @@ struct ContentView: View {
             in: destinationFolder,
             sectioned: trimEnabled && timeRanges.count > 1
         )
+        let sidecarBase = FilenamePolicy.sanitize(subtitleFilenameIsCustom ? subtitleFilename : "")
+        let uniqueSubtitleBase = sidecarBase.isEmpty
+            ? ""
+            : FilenamePolicy.uniqueFilename(base: sidecarBase, in: destinationFolder)
         downloadStartedAt = Date()
         model.download(
             urlString: urlString,
@@ -503,6 +575,9 @@ struct ContentView: View {
             outputContainer: selectedOutputContainer,
             destinationFolder: destinationFolder,
             fileName: uniqueBase,
+            subtitleLanguage: selectedSubtitleLanguage,
+            embedSubtitles: embedSubtitles && !audioOnly,
+            subtitleFileName: uniqueSubtitleBase,
             timeRanges: trimEnabled ? timeRanges : [],
             mergeSections: mergeSections
         )

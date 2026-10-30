@@ -85,6 +85,11 @@ struct VideoInfo: Codable, Equatable {
     let viewCount: Int?
     /// Every format yt-dlp offers for this video, worst to best as yt-dlp orders them.
     let formats: [VideoFormat]
+    /// Manually-authored subtitle tracks, keyed by yt-dlp language code (e.g. "en", "es").
+    let subtitles: [String: [SubtitleTrackInfo]]?
+    /// Auto-generated caption tracks, keyed by language code. Sites like
+    /// YouTube can offer dozens of auto-translated languages here.
+    let automaticCaptions: [String: [SubtitleTrackInfo]]?
 
     enum CodingKeys: String, CodingKey {
         case title
@@ -93,7 +98,18 @@ struct VideoInfo: Codable, Equatable {
         case channel
         case viewCount = "view_count"
         case formats
+        case subtitles
+        case automaticCaptions = "automatic_captions"
     }
+}
+
+/// One available subtitle track for a language, decoded from an entry in
+/// yt-dlp's "subtitles"/"automatic_captions" maps. yt-dlp lists one entry
+/// per sub-format (vtt, srv3, ...) for the same language; only `name` is
+/// used here (for a human-readable label when yt-dlp provides one) since
+/// `--sub-langs`/`--sub-format` select by language, not by individual entry.
+struct SubtitleTrackInfo: Codable, Hashable {
+    let name: String?
 }
 
 /// One downloadable format of a video, decoded from an entry in yt-dlp's
@@ -118,6 +134,10 @@ struct VideoFormat: Codable, Identifiable, Hashable {
     let tbr: Double?
     let filesize: Int64?
     let filesizeApprox: Int64?
+    /// yt-dlp's download protocol for this format, e.g. "https" or
+    /// "m3u8_native" (HLS). Used only to break quality ties in favor of a
+    /// format whose progress reporting is reliable — see `hasReliableProgress`.
+    let formatProtocol: String?
 
     var id: String { formatId }
 
@@ -133,6 +153,7 @@ struct VideoFormat: Codable, Identifiable, Hashable {
         case tbr
         case filesize
         case filesizeApprox = "filesize_approx"
+        case formatProtocol = "protocol"
     }
 
     /// True if this format carries a video track (yt-dlp uses vcodec "none" for audio-only formats).
@@ -149,6 +170,17 @@ struct VideoFormat: Codable, Identifiable, Hashable {
     /// True if this format has no separate audio track (common for high-res DASH video streams).
     var isVideoOnly: Bool {
         hasVideo && (acodec == nil || acodec == "none")
+    }
+
+    /// False for streaming-manifest protocols (HLS/DASH segments), whose
+    /// per-fragment progress reporting is far less reliable than a plain
+    /// HTTP download — yt-dlp's own size estimate for these swings wildly
+    /// fragment to fragment, and it prints a literal "ETA Unknown" for long
+    /// stretches even mid-download. Same underlying quality, worse UI, so
+    /// this only matters as a tie-break — see `FormatSelection`.
+    var hasReliableProgress: Bool {
+        guard let formatProtocol else { return true }
+        return !formatProtocol.contains("m3u8") && !formatProtocol.contains("dash")
     }
 
     /// A rough quality score for sorting/defaulting a picker to "best first".
@@ -278,6 +310,10 @@ final class YtDlpModel {
     /// Whether the current download includes a video track, so the first
     /// "Destination:" line is labeled correctly for audio-only downloads.
     private var expectsVideoTrack = true
+    /// True while the stream most recently announced by a "Destination:"
+    /// line is a subtitle sidecar file rather than video/audio — see
+    /// `processOutputLine`.
+    private var isDownloadingSubtitle = false
     /// Number of time-range sections requested this download; 0 means
     /// trimming isn't active and `processOutputLine` uses the normal
     /// video/audio-pair tracking above instead. A sectioned download's
@@ -385,12 +421,18 @@ final class YtDlpModel {
     /// controls the container yt-dlp merges into; it's ignored if no merge
     /// is needed (e.g. only one track was selected). `fileName` is used
     /// without its extension — yt-dlp appends the real one; an empty
-    /// `fileName` falls back to the video's title. `timeRanges` trims the
-    /// download to those spans (each becomes a `--download-sections`);
-    /// empty downloads the full video, unchanged from before this param
-    /// existed. With more than one range, `mergeSections` chooses between
-    /// one output file per range (each named with its start/end) or
-    /// concatenating them into a single file afterward.
+    /// `fileName` falls back to the video's title. Pass `subtitleLanguage`
+    /// to also fetch subtitles for that language — `nil` skips subtitles
+    /// entirely. `embedSubtitles` muxes them into the video file instead of
+    /// writing a sidecar file alongside it; it's ignored when
+    /// `subtitleLanguage` is `nil`. When not embedding, `subtitleFileName`
+    /// (without extension; empty falls back to `fileName`) names the
+    /// sidecar file, which yt-dlp writes as `<name>.<lang>.srt`.
+    /// `timeRanges` trims the download to those spans (each becomes a
+    /// `--download-sections`); empty downloads the full video. With more than
+    /// one range, `mergeSections` chooses between one output file per range
+    /// (each named with its start/end) or concatenating them into a single
+    /// file afterward.
     ///
     /// Bails out if a fetch or download is already in flight — see the note
     /// on `runVersion()`.
@@ -401,6 +443,9 @@ final class YtDlpModel {
         outputContainer: OutputContainer,
         destinationFolder: URL,
         fileName: String,
+        subtitleLanguage: SubtitleSelection.LanguageOption?,
+        embedSubtitles: Bool,
+        subtitleFileName: String = "",
         timeRanges: [VideoTimeRange] = [],
         mergeSections: Bool = false
     ) {
@@ -420,6 +465,7 @@ final class YtDlpModel {
         expectsVideoTrack = !(videoFormatId == nil && audioFormatId != nil)
         destinationCount = 0
         seenDestinations = []
+        isDownloadingSubtitle = false
         expectedSectionCount = timeRanges.count
         sectionsCompleted = 0
         sectionOutputFiles = []
@@ -451,6 +497,29 @@ final class YtDlpModel {
         let formatSelector = [videoFormatId, audioFormatId].compactMap { $0 }.joined(separator: "+")
         if !formatSelector.isEmpty {
             args += ["-f", formatSelector]
+        }
+        if let subtitleLanguage {
+            // Both write flags, always: --write-subs alone ignores a
+            // language that only exists as auto-generated captions, and
+            // --write-auto-subs alone ignores manual tracks. With both,
+            // yt-dlp prefers the manual track and falls back to auto.
+            args += ["--sub-langs", subtitleLanguage.code, "--write-subs", "--write-auto-subs"]
+            if embedSubtitles {
+                // Explicit --write-subs makes yt-dlp treat the subtitle file
+                // as requested and keep it as a sidecar next to the embedded
+                // copy; the no-keep-subs compat option (there is no
+                // --no-keep-subs flag) restores delete-after-embedding.
+                args += ["--embed-subs", "--compat-options", "no-keep-subs"]
+            } else {
+                // Converting to srt gives the sidecar a known extension, so
+                // the UI can show it as the field's fixed suffix. (Not done
+                // when embedding: webm only accepts vtt subtitles.)
+                args += ["--convert-subs", "srt"]
+                // A `subtitle:` output template only changes the base name;
+                // yt-dlp still appends ".<lang>.<ext>" itself.
+                let subtitleName = subtitleFileName.isEmpty ? nameComponent : Self.sanitizedFileNameComponent(subtitleFileName)
+                args += ["-o", "subtitle:\(destinationFolder.path)/\(subtitleName).%(ext)s"]
+            }
         }
         for range in timeRanges {
             args += ["--download-sections", "*\(Self.sectionTimestamp(range.start))-\(Self.sectionTimestamp(range.end))"]
@@ -796,43 +865,70 @@ final class YtDlpModel {
         // Each stream yt-dlp downloads starts with its own Destination line.
         // A retried/resumed fragment can reprint the same line for the file
         // already in progress, so only a *new* path counts as a new stream.
-        // A sectioned (trimmed) download reports one Destination line per
-        // *section* rather than per video/audio track — yt-dlp cuts each
-        // range with a direct ffmpeg pipeline that never prints the usual
-        // separate video-then-audio Destination pair — so it needs its own
-        // counter instead of the video/audio-pair logic below.
-        if line.contains("[download] Destination:"), let dest, !seenDestinations.contains(dest) {
-            seenDestinations.insert(dest)
-            if expectedSectionCount > 0 {
-                sectionsCompleted += 1
-                sectionOutputFiles.append(URL(fileURLWithPath: dest))
-                downloadPhase = .trimmingSection(index: min(sectionsCompleted, expectedSectionCount), total: expectedSectionCount)
-                lastDownloadedFile = URL(fileURLWithPath: dest)
-                // Fresh section, fresh progress — ffmpeg's own progress
-                // (parsed from stderr in processFFmpegStderrLine) hasn't
-                // reported anything for it yet.
-                downloadProgress = 0.0
-                downloadedSizeText = nil
-                totalSizeText = nil
-                speedText = nil
-                etaText = nil
-            } else {
-                destinationCount += 1
-                let isVideoTrack = destinationCount == 1 && expectsVideoTrack
-                downloadPhase = isVideoTrack ? .downloadingVideo : .downloadingAudio
-                downloadProgress = 0.0
-                // Clear the previous stream's stats rather than leaving them
-                // to show alongside the new stream's phase/progress until its
-                // own first progress line arrives.
-                downloadedSizeText = nil
-                totalSizeText = nil
-                speedText = nil
-                etaText = nil
+        // A requested subtitle file gets its own Destination line too,
+        // fetched (and fully downloaded, with its own 0%-100% progress)
+        // before the real video/audio streams — isDownloadingSubtitle tracks
+        // that so its lines don't count as stream #1 below, or flash
+        // downloadProgress to its own 100% just before the real video
+        // stream's Destination line resets it back to 0%.
+        // A subtitle fetch is nothing but "[download]" lines; any other
+        // tag ([info], [Merger], …) or an "already downloaded" notice means
+        // it's over, even if no video/audio Destination line follows (the
+        // video was already on disk, or a partial file is being resumed).
+        if isDownloadingSubtitle,
+           !line.hasPrefix("[download]") || line.contains("has already been downloaded") {
+            isDownloadingSubtitle = false
+        }
+        if line.contains("[download] Destination:"), let dest {
+            isDownloadingSubtitle = Self.isSubtitleDestination(dest)
+            if !isDownloadingSubtitle, !seenDestinations.contains(dest) {
+                seenDestinations.insert(dest)
+                // A sectioned (trimmed) download reports one Destination line
+                // per *section* rather than per video/audio track — yt-dlp cuts
+                // each range with a direct ffmpeg pipeline that never prints
+                // the usual separate video-then-audio Destination pair — so it
+                // needs its own counter instead of the video/audio-pair logic
+                // below.
+                if expectedSectionCount > 0 {
+                    sectionsCompleted += 1
+                    sectionOutputFiles.append(URL(fileURLWithPath: dest))
+                    downloadPhase = .trimmingSection(index: min(sectionsCompleted, expectedSectionCount), total: expectedSectionCount)
+                    lastDownloadedFile = URL(fileURLWithPath: dest)
+                    // Fresh section, fresh progress — ffmpeg's own progress
+                    // (parsed from stderr in processFFmpegStderrLine) hasn't
+                    // reported anything for it yet.
+                    downloadProgress = 0.0
+                    downloadedSizeText = nil
+                    totalSizeText = nil
+                    speedText = nil
+                    etaText = nil
+                } else {
+                    destinationCount += 1
+                    let isVideoTrack = destinationCount == 1 && expectsVideoTrack
+                    downloadPhase = isVideoTrack ? .downloadingVideo : .downloadingAudio
+                    downloadProgress = 0.0
+                    // Clear the previous stream's stats rather than leaving them
+                    // to show alongside the new stream's phase/progress until its
+                    // own first progress line arrives.
+                    downloadedSizeText = nil
+                    totalSizeText = nil
+                    speedText = nil
+                    etaText = nil
+                }
             }
         }
 
         if line.contains("[Merger]") {
             downloadPhase = .merging
+        }
+
+        // The subtitle stream's own progress/size lines (percentage, "of X
+        // at Y ETA Z", its Destination path) are irrelevant to the
+        // video/audio progress this view tracks — see isDownloadingSubtitle above.
+        if isDownloadingSubtitle {
+            // Its own 100% line is the last thing it prints.
+            if Self.parseProgress(from: line) == 1.0 { isDownloadingSubtitle = false }
+            return
         }
 
         // A sectioned download's own progress lines (a single 0%→100%
@@ -871,6 +967,15 @@ final class YtDlpModel {
         }
     }
 
+    /// Subtitle sidecar extensions yt-dlp can write with `--write-subs`/
+    /// `--write-auto-subs`, so their Destination lines can be told apart
+    /// from the video/audio streams `processOutputLine` tracks.
+    private static let subtitleExtensions: Set<String> = ["vtt", "srt", "ass", "ttml", "srv1", "srv2", "srv3", "json3"]
+
+    private nonisolated static func isSubtitleDestination(_ path: String) -> Bool {
+        subtitleExtensions.contains(URL(fileURLWithPath: path).pathExtension.lowercased())
+    }
+
     /// Extracts a download percentage from a line of yt-dlp output
     /// (e.g. "[download]  42.5% of ..." or "[download] 100% of ...") and
     /// returns it as a fraction in 0.0...1.0, or nil if the line contains
@@ -887,9 +992,12 @@ final class YtDlpModel {
     /// 4.10MiB/s ETA 00:12" — already human-readable, so passed through as-is
     /// rather than re-parsed into raw numbers (`parseByteCount` below only
     /// exists to derive the downloaded-so-far figure, which yt-dlp doesn't
-    /// print directly).
+    /// print directly). The ETA group requires a leading digit so a literal
+    /// "ETA Unknown" — which HLS/DASH streams print for long stretches —
+    /// fails to match here, same as the already-numeric-only speed group,
+    /// rather than surfacing a useless "Unknown left" in the UI.
     private nonisolated static func parseProgressDetail(from line: String) -> (total: String, speed: String, eta: String)? {
-        guard let match = line.firstMatch(of: /of\s+~?([\d.]+\w+)\s+at\s+([\d.]+\w+\/s)\s+ETA\s+(\S+)/) else { return nil }
+        guard let match = line.firstMatch(of: /of\s+~?([\d.]+\w+)\s+at\s+([\d.]+\w+\/s)\s+ETA\s+(\d\S*)/) else { return nil }
         return (total: String(match.1), speed: String(match.2), eta: String(match.3))
     }
 
