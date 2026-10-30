@@ -39,7 +39,6 @@ struct DownloadPrimaryButton: View {
             )
         }
         .buttonStyle(.plain)
-        .fadesWhenWindowInactive()
         .onHover { isHovering = $0 }
         .pointingHandCursor()
         .keyboardShortcut(.return, modifiers: .command)

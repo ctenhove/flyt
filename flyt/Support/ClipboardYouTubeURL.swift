@@ -42,8 +42,15 @@ enum ClipboardYouTubeURL {
         guard let url = URL(string: urlString) else { return "Paste" }
         let host = url.host?.replacingOccurrences(of: "www.", with: "") ?? ""
         var display = host + url.path
-        if display.utf8.count > 28 {
-            display = String(display.prefix(25)) + "…"
+        // A watch link's path is always just "/watch"; the video is in the
+        // `v` parameter, so show that or every link would read the same.
+        if url.path == "/watch",
+           let videoID = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+               .queryItems?.first(where: { $0.name == "v" })?.value {
+            display += "?v=" + videoID
+        }
+        if display.count > 36 {
+            display = String(display.prefix(33)) + "…"
         }
         return "Paste — \(display)"
     }

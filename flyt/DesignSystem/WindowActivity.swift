@@ -6,29 +6,31 @@
 import SwiftUI
 
 extension View {
-    /// Softens this view while the window isn't the focused one, so the
-    /// accent blue still reads as "this app's blue" but signals that focus
-    /// is elsewhere. Native controls go grey in that state; the app's own
-    /// blue fills have nothing doing it for them. Pass `false` for `when`
-    /// to leave a view alone (e.g. an unselected chip).
-    func fadesWhenWindowInactive(when applies: Bool = true) -> some View {
-        modifier(InactiveWindowFade(applies: applies))
+    /// Softens this view while its window isn't the focused one, so it's
+    /// obvious at a glance that focus is elsewhere. Apply it once to a
+    /// window's content rather than to individual controls: the app's own
+    /// accent colours (blue fills, links, the progress bar) otherwise look
+    /// identical whether or not the window is active, while native controls
+    /// grey out on their own.
+    func fadesWhenWindowInactive(opacity: Double = 0.7) -> some View {
+        modifier(InactiveWindowFade(opacity: opacity))
     }
 }
 
 private struct InactiveWindowFade: ViewModifier {
-    var applies: Bool
+    var opacity: Double
     @Environment(\.controlActiveState) private var controlActiveState
 
     func body(content: Content) -> some View {
-        content.opacity(applies && controlActiveState == .inactive ? 0.6 : 1)
+        content
+            .opacity(controlActiveState == .inactive ? opacity : 1)
             .animation(.easeOut(duration: 0.15), value: controlActiveState == .inactive)
     }
 }
 
 /// The app's on/off switch. The native macOS switch turns grey whenever its
 /// window loses focus — even while on — which reads as "off". This one stays
-/// blue and fades along with the rest of the accent colour instead.
+/// blue; the window-wide fade (`fadesWhenWindowInactive`) is what signals focus loss.
 struct FlytSwitchToggleStyle: ToggleStyle {
     func makeBody(configuration: Configuration) -> some View {
         HStack(spacing: 10) {
@@ -38,7 +40,6 @@ struct FlytSwitchToggleStyle: ToggleStyle {
             } label: {
                 Capsule()
                     .fill(configuration.isOn ? Color.flytSky : Color.flytBorder)
-                    .fadesWhenWindowInactive(when: configuration.isOn)
                     .frame(width: 38, height: 22)
                     .overlay(alignment: configuration.isOn ? .trailing : .leading) {
                         Circle()

@@ -53,11 +53,17 @@ struct ContentView: View {
     /// still being typed out by hand.
     @State private var pendingFetchTask: Task<Void, Never>?
 
-    /// Bumped whenever the app regains focus, so the URL field's clipboard
-    /// check (a computed property, otherwise only re-evaluated when some
-    /// other `@State` changes) re-runs after switching back from wherever a
-    /// YouTube link might have just been copied.
-    @State private var clipboardCheckTick = 0
+    /// The YouTube link on the clipboard, if any. Read only when the app
+    /// becomes active (that's when it can have changed, after copying from
+    /// elsewhere), not on every redraw — this view redraws on each download
+    /// progress tick, and each pasteboard read is wasted work that can also
+    /// trigger the system's paste-access notice.
+    @State private var clipboardURL: String?
+
+    /// Items that were queued or downloading when the Dock progress bar's
+    /// current batch began or since, so a finished download keeps counting
+    /// as 100% instead of dropping out and making the bar jump backwards.
+    @State private var dockBatch: Set<UUID> = []
 
     init(dependencyManager: DependencyManager) {
         self.dependencyManager = dependencyManager
@@ -74,6 +80,9 @@ struct ContentView: View {
         .padding(.top, 20)
         .padding(.bottom, 22)
         .frame(width: 560)
+        // The whole window softens when it loses focus (the background stays
+        // solid, so the window doesn't turn see-through).
+        .fadesWhenWindowInactive()
         .background(Color.flytSurface)
         .toolbar {
             MainWindowTitlebar(pulse: markPulse)
@@ -90,6 +99,13 @@ struct ContentView: View {
         .onChange(of: destinationFolder) { _, newValue in
             Preferences.destinationFolder = newValue
         }
+        .onChange(of: activeItemIDs) { _, active in
+            if active.isEmpty {
+                dockBatch = []
+            } else {
+                dockBatch.formUnion(active)
+            }
+        }
         .onChange(of: dockFraction) { _, fraction in
             if let fraction {
                 DockProgress.update(fraction: fraction)
@@ -97,8 +113,9 @@ struct ContentView: View {
                 DockProgress.clear()
             }
         }
+        .onAppear { clipboardURL = ClipboardYouTubeURL.current() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            clipboardCheckTick &+= 1
+            clipboardURL = ClipboardYouTubeURL.current()
         }
         .sheet(isPresented: $showingHistory) {
             HistoryView(store: historyStore, onRedownload: { urlString in
@@ -110,21 +127,36 @@ struct ContentView: View {
 
     // MARK: List
 
-    /// Overall progress across every download in flight, for the Dock tile —
-    /// nil when nothing is downloading, which clears it.
+    /// Items currently queued or downloading.
+    private var activeItemIDs: Set<UUID> {
+        Set(items.filter { $0.model.isDownloading || $0.settings.isQueued }.map(\.id))
+    }
+
+    /// Overall progress of the current batch of downloads, for the Dock tile
+    /// — nil when nothing is in flight, which clears it. Finished downloads
+    /// count as done and queued ones as not started, so the bar only moves
+    /// forward as the batch advances. Failed and cancelled ones don't count.
     private var dockFraction: Double? {
-        let active = items.map(\.model).filter(\.isDownloading)
+        let active = activeItemIDs
         guard !active.isEmpty else { return nil }
-        return active.map(\.downloadProgress).reduce(0, +) / Double(active.count)
+        let shares: [Double] = items.compactMap { item in
+            guard dockBatch.contains(item.id) || active.contains(item.id) else { return nil }
+            if item.settings.showingComplete { return 1 }
+            if item.model.isDownloading { return item.model.downloadProgress }
+            if item.settings.isQueued { return 0 }
+            return nil
+        }
+        guard !shares.isEmpty else { return nil }
+        return shares.reduce(0, +) / Double(shares.count)
     }
 
     /// The URL field's trailing affordance: a one-tap "Paste — youtu.be/…"
-    /// when the clipboard holds a YouTube link and the field is empty,
-    /// otherwise the plain "⌘V" hint (or nothing, once the user starts typing).
+    /// when the clipboard holds a YouTube link (not one already added) and
+    /// the field is empty, otherwise the plain "⌘V" hint (or nothing, once
+    /// the user starts typing).
     private var urlFieldTrailing: URLField.Trailing {
-        _ = clipboardCheckTick
         guard newURLString.isEmpty else { return .none }
-        guard let clipboardURL = ClipboardYouTubeURL.current() else { return .hint }
+        guard let clipboardURL, !items.contains(where: { $0.urlString == clipboardURL }) else { return .hint }
         return .pasteSuggestion(label: ClipboardYouTubeURL.label(for: clipboardURL)) {
             newURLString = clipboardURL
         }

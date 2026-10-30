@@ -13,8 +13,20 @@ enum Preferences {
     private static let outputContainerKey = "lastOutputContainer"
     private static let preferredResolutionHeightKey = "lastPreferredResolutionHeight"
 
+    /// The saved destination, or nil if none is saved or it's no longer a
+    /// usable folder (deleted, renamed, an unplugged drive, no write access)
+    /// — callers then fall back to the default instead of starting a
+    /// download that can only fail. The saved value itself is left alone,
+    /// so a drive that's merely not mounted this launch works again next time.
     static var destinationFolder: URL? {
-        get { UserDefaults.standard.string(forKey: destinationFolderKey).map { URL(fileURLWithPath: $0) } }
+        get {
+            guard let path = UserDefaults.standard.string(forKey: destinationFolderKey) else { return nil }
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
+                  isDirectory.boolValue,
+                  FileManager.default.isWritableFile(atPath: path) else { return nil }
+            return URL(fileURLWithPath: path)
+        }
         set { UserDefaults.standard.set(newValue?.path, forKey: destinationFolderKey) }
     }
 

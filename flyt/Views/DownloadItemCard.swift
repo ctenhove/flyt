@@ -74,13 +74,6 @@ struct DownloadItemCard: View {
                 settings.filename = FilenamePolicy.sanitize(info.title)
             }
         }
-        .onChange(of: settings.selectedOutputContainer) { _, newValue in
-            Preferences.outputContainer = newValue
-        }
-        .onChange(of: settings.selectedVideoFormatID) { _, _ in
-            guard let height = selectedVideoFormat?.height else { return }
-            Preferences.preferredResolutionHeight = height
-        }
         .onChange(of: settings.audioOnly) { _, isOn in
             // embedSubtitles is left as-is while audioOnly is on: the toggle
             // is hidden (there's no video track to embed into) and
@@ -175,7 +168,7 @@ struct DownloadItemCard: View {
                         onResetFilename: resetFilenameToTitle,
                         resolutionOptions: settings.resolutionOptions,
                         selectedHeight: heightBinding,
-                        selectedContainer: $settings.selectedOutputContainer,
+                        selectedContainer: containerBinding,
                         audioOptions: settings.audioOptions,
                         selectedAudioExt: audioExtBinding,
                         audioOnly: $settings.audioOnly,
@@ -378,6 +371,21 @@ struct DownloadItemCard: View {
             set: { newHeight in
                 guard let newHeight, let match = settings.resolutionOptions.first(where: { $0.height == newHeight }) else { return }
                 settings.selectedVideoFormatID = match.format.id
+                // Only a deliberate pick is remembered — not the default
+                // chosen when a video lacks the preferred height, which
+                // would otherwise overwrite the preference.
+                Preferences.preferredResolutionHeight = newHeight
+            }
+        )
+    }
+
+    /// Like `heightBinding`, remembers only a deliberate choice.
+    private var containerBinding: Binding<OutputContainer> {
+        Binding(
+            get: { settings.selectedOutputContainer },
+            set: {
+                settings.selectedOutputContainer = $0
+                Preferences.outputContainer = $0
             }
         )
     }
@@ -471,6 +479,7 @@ struct DownloadItemCard: View {
             ? ""
             : FilenamePolicy.uniqueFilename(base: sidecarBase, in: destinationFolder)
         settings.downloadStartedAt = Date()
+        CompletionNotification.requestAuthorizationIfNeeded()
         let started = model.download(
             urlString: originalURLString,
             videoFormatId: settings.selectedVideoFormatID,

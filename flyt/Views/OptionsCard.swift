@@ -278,7 +278,6 @@ private struct ChipButton: View {
                 )
         }
         .buttonStyle(.plain)
-        .fadesWhenWindowInactive(when: isSelected)
         .pointingHandCursor()
     }
 }
@@ -303,7 +302,6 @@ private struct SegmentedRow<Item: Identifiable>: View {
                         .background(isSelected(item) ? Color.flytSky : Color.flytSurface)
                 }
                 .buttonStyle(.plain)
-                .fadesWhenWindowInactive(when: isSelected(item))
                 .pointingHandCursor()
                 .overlay(alignment: .leading) {
                     if index > 0 {

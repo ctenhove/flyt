@@ -11,6 +11,7 @@ import AppKit
 /// download is in flight, so progress is glanceable without switching back
 /// to the window — handy once multi-file downloads make a single run take
 /// longer.
+@MainActor
 enum DockProgress {
     private static let tileView = TileView()
 
@@ -36,6 +37,7 @@ enum DockProgress {
         dockTile.display()
     }
 
+    @MainActor
     private final class TileView: NSView {
         var fraction: Double = 0 {
             didSet { needsDisplay = true }

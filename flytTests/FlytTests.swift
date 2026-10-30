@@ -111,6 +111,10 @@ struct FlytTests {
         #expect(ClipboardYouTubeURL.label(for: "https://youtu.be/dQw4w9WgXcQ") == "Paste — youtu.be/dQw4w9WgXcQ")
     }
 
+    @Test func labelIdentifiesTheVideoForWatchLinks() {
+        #expect(ClipboardYouTubeURL.label(for: "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PL123") == "Paste — youtube.com/watch?v=dQw4w9WgXcQ")
+    }
+
     @Test func labelDropsWwwPrefix() {
         #expect(ClipboardYouTubeURL.label(for: "https://www.youtube.com/x") == "Paste — youtube.com/x")
     }
