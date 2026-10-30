@@ -41,6 +41,10 @@ struct ContentView: View {
     /// subtitles" — a loose .srt/.vtt file alongside the video is the
     /// opt-out, not the default.
     @State private var embedSubtitles = true
+    /// Name for the sidecar subtitle file (no extension). Follows the video
+    /// filename until the user types their own.
+    @State private var subtitleFilename = ""
+    @State private var subtitleFilenameIsCustom = false
 
     @State private var showingComplete = false
     @State private var downloadStartedAt: Date?
@@ -111,8 +115,13 @@ struct ContentView: View {
             if selectedAudioFormatID == nil {
                 selectedAudioFormatID = audioFormats.first?.id
             }
-            if selectedSubtitleLanguageCode == nil {
+            // A code left over from a previous fetch may no longer be on
+            // offer; an unmatched code would silently download no subtitles.
+            if !subtitleLanguageOptions.contains(where: { $0.code == selectedSubtitleLanguageCode }) {
                 selectedSubtitleLanguageCode = subtitleLanguageOptions.first?.code
+            }
+            if subtitleLanguageOptions.isEmpty {
+                subtitlesEnabled = false
             }
             if !filenameIsCustom {
                 filename = FilenamePolicy.sanitize(info.title)
@@ -210,6 +219,9 @@ struct ContentView: View {
                         subtitlesEnabled: $subtitlesEnabled,
                         selectedSubtitleLanguageCode: $selectedSubtitleLanguageCode,
                         embedSubtitles: $embedSubtitles,
+                        subtitleFilename: subtitleFilenameBinding,
+                        subtitleFilenameIsCustom: subtitleFilenameIsCustom,
+                        onResetSubtitleFilename: { subtitleFilenameIsCustom = false },
                         onCollapse: { optionsExpanded = false }
                     )
                 } else {
@@ -437,6 +449,20 @@ struct ContentView: View {
         subtitlesEnabled = false
         selectedSubtitleLanguageCode = nil
         embedSubtitles = true
+        subtitleFilename = ""
+        subtitleFilenameIsCustom = false
+    }
+
+    /// Shows the video filename until the user edits it, so the two stay in
+    /// step by default; typing latches `subtitleFilenameIsCustom`.
+    private var subtitleFilenameBinding: Binding<String> {
+        Binding(
+            get: { subtitleFilenameIsCustom ? subtitleFilename : filename },
+            set: {
+                subtitleFilename = $0
+                subtitleFilenameIsCustom = true
+            }
+        )
     }
 
     private func resetFilenameToTitle() {
@@ -503,6 +529,10 @@ struct ContentView: View {
             base: base.isEmpty ? "download" : base,
             in: destinationFolder
         )
+        let sidecarBase = FilenamePolicy.sanitize(subtitleFilenameIsCustom ? subtitleFilename : "")
+        let uniqueSubtitleBase = sidecarBase.isEmpty
+            ? ""
+            : FilenamePolicy.uniqueFilename(base: sidecarBase, in: destinationFolder)
         downloadStartedAt = Date()
         model.download(
             urlString: urlString,
@@ -512,7 +542,8 @@ struct ContentView: View {
             destinationFolder: destinationFolder,
             fileName: uniqueBase,
             subtitleLanguage: selectedSubtitleLanguage,
-            embedSubtitles: embedSubtitles && !audioOnly
+            embedSubtitles: embedSubtitles && !audioOnly,
+            subtitleFileName: uniqueSubtitleBase
         )
     }
 

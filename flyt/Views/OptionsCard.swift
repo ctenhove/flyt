@@ -31,6 +31,9 @@ struct OptionsCard: View {
     @Binding var subtitlesEnabled: Bool
     @Binding var selectedSubtitleLanguageCode: String?
     @Binding var embedSubtitles: Bool
+    @Binding var subtitleFilename: String
+    var subtitleFilenameIsCustom: Bool
+    var onResetSubtitleFilename: () -> Void
 
     var onCollapse: () -> Void
 
@@ -174,6 +177,18 @@ struct OptionsCard: View {
                             .font(.system(size: 11.5, weight: .semibold))
                             .foregroundStyle(.flytBodyTextSecondary)
                     }
+                }
+                // Only a sidecar file has a name of its own to choose.
+                if audioOnly || !embedSubtitles, let code = selectedSubtitleLanguageCode {
+                    FilenameField(
+                        filename: $subtitleFilename,
+                        fileExtension: "\(code).srt",
+                        isCustom: subtitleFilenameIsCustom,
+                        onReset: onResetSubtitleFilename,
+                        style: .card,
+                        label: "Subtitle filename",
+                        resetTitle: "Reset to video name"
+                    )
                 }
             }
         }
