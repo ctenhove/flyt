@@ -191,6 +191,17 @@ struct VideoFormat: Codable, Identifiable, Hashable {
         return abr ?? tbr ?? 0
     }
 
+    /// True for H.264/AVC — the one video codec reliably playable in
+    /// QuickTime Player and other AVFoundation-based software once muxed
+    /// into an MP4 container. VP9 and AV1 often produce an MP4 QuickTime
+    /// opens fine (the container and AAC audio both decode normally) but
+    /// won't render any video from — audio plays, the picture doesn't.
+    /// Used only as a selection tie-break, not a filter: a video with no
+    /// H.264 option at a given quality still needs *a* format.
+    var isBroadlyCompatibleCodec: Bool {
+        vcodec?.hasPrefix("avc1") == true
+    }
+
     /// A short human-readable summary for a format picker, e.g.
     /// "1080p60 · mp4 · h264 · video only · 85.4 MB" or "128 kbps · m4a · aac · 3.1 MB".
     var label: String {
@@ -285,6 +296,10 @@ final class YtDlpModel {
     /// completion screen, notably — need this rather than inferring it
     /// from the absence of an error.
     var wasCancelled = false
+    /// Set when the video downloaded fine but its subtitles couldn't be
+    /// fetched, so the completion screen can say so rather than the user
+    /// finding the subtitles missing. Reset at the start of each download.
+    var subtitleFailureNote: String?
     /// Downloaded-so-far and total size, already unit-formatted (e.g.
     /// "34.1 MB", "74.3 MB"), derived from yt-dlp's own progress line.
     /// `nil` until the first progress line with a total size arrives.
@@ -436,6 +451,11 @@ final class YtDlpModel {
     ///
     /// Bails out if a fetch or download is already in flight — see the note
     /// on `runVersion()`.
+    ///
+    /// Returns whether a download actually started, so a caller that
+    /// reserved a `DownloadCoordinator` slot for it knows to release the
+    /// slot when it didn't.
+    @discardableResult
     func download(
         urlString: String,
         videoFormatId: String?,
@@ -448,8 +468,8 @@ final class YtDlpModel {
         subtitleFileName: String = "",
         timeRanges: [VideoTimeRange] = [],
         mergeSections: Bool = false
-    ) {
-        guard !isBusy else { return }
+    ) -> Bool {
+        guard !isBusy else { return false }
         resetCancellation()
         isDownloading = true
         downloadProgress = 0.0
@@ -459,6 +479,7 @@ final class YtDlpModel {
         etaText = nil
         errorMessage = nil
         wasCancelled = false
+        subtitleFailureNote = nil
         // yt-dlp's own default format selection (both nil) resolves to
         // bestvideo+bestaudio, i.e. video first — so the first destination
         // is audio only when the caller explicitly picked audio with no video.
@@ -475,6 +496,33 @@ final class YtDlpModel {
             ? .trimmingSection(index: 1, total: expectedSectionCount)
             : (expectsVideoTrack ? .downloadingVideo : .downloadingAudio)
 
+        // Every download writes into its own hidden, per-download scratch
+        // folder rather than the visible destination directly:
+        //  - keeps in-progress fragments/.part files out of Finder instead
+        //    of appearing (and disappearing) in the destination folder
+        //    while a download is running;
+        //  - means two downloads of the same video — same title, same
+        //    format — can never collide on the same fragment/temp
+        //    filenames the way they would sharing one folder, which is
+        //    what was corrupting/leaving fragments behind before;
+        //  - makes "delete everything" on cancel or failure a single
+        //    directory removal instead of hunting down whatever partial
+        //    files yt-dlp happened to leave behind.
+        // The dot prefix is what actually hides it from Finder; the UUID
+        // just needs to be unique per download, not itself secret.
+        let tempFolder = destinationFolder.appendingPathComponent(".flyt-\(UUID().uuidString)", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: tempFolder, withIntermediateDirectories: true)
+        } catch {
+            errorMessage = "Couldn't write to \(destinationFolder.path): \(error.localizedDescription)"
+            isDownloading = false
+            downloadPhase = .idle
+            return false
+        }
+        // Recorded so a quit or crash before the cleanup below can't leave
+        // it behind for good — see ScratchFolderRegistry.sweepStale.
+        ScratchFolderRegistry.register(tempFolder)
+
         let nameComponent = fileName.isEmpty ? "%(title)s" : Self.sanitizedFileNameComponent(fileName)
         // Requesting more than one time range without a per-range output
         // template would have every range write to the same final path —
@@ -490,9 +538,15 @@ final class YtDlpModel {
             // video/audio destination pair, which would blow past
             // the two streams processOutputLine expects to see.
             "--no-playlist",
+            // Machine-readable progress instead of yt-dlp's formatted text,
+            // whose layout varies (padded "~" estimates, "Unknown" speed/ETA,
+            // fragment counters) and was too easy to fail to parse. Starts
+            // with "[download] " so everything that keys off that tag still
+            // treats these as download-progress lines.
+            "--progress-template", Self.progressTemplate,
             "--ffmpeg-location", dependencyManager.ffmpegURL.path,
             "--merge-output-format", outputContainer.rawValue,
-            "-o", "\(destinationFolder.path)/\(nameComponent)\(sectionSuffix).%(ext)s"
+            "-o", "\(tempFolder.path)/\(nameComponent)\(sectionSuffix).%(ext)s"
         ]
         let formatSelector = [videoFormatId, audioFormatId].compactMap { $0 }.joined(separator: "+")
         if !formatSelector.isEmpty {
@@ -504,6 +558,13 @@ final class YtDlpModel {
             // --write-auto-subs alone ignores manual tracks. With both,
             // yt-dlp prefers the manual track and falls back to auto.
             args += ["--sub-langs", subtitleLanguage.code, "--write-subs", "--write-auto-subs"]
+            // Subtitles are a bonus, not the point of the download: without
+            // this, yt-dlp aborts the whole thing when the subtitle request
+            // fails (YouTube rate-limits them with HTTP 429 fairly often),
+            // video and all. With it, that failure is just a warning and the
+            // video still downloads — see `noteSubtitleFailure`, which tells
+            // the user. Real failures of the video itself still exit nonzero.
+            args += ["--ignore-errors"]
             if embedSubtitles {
                 // Explicit --write-subs makes yt-dlp treat the subtitle file
                 // as requested and keep it as a sidecar next to the embedded
@@ -518,7 +579,7 @@ final class YtDlpModel {
                 // A `subtitle:` output template only changes the base name;
                 // yt-dlp still appends ".<lang>.<ext>" itself.
                 let subtitleName = subtitleFileName.isEmpty ? nameComponent : Self.sanitizedFileNameComponent(subtitleFileName)
-                args += ["-o", "subtitle:\(destinationFolder.path)/\(subtitleName).%(ext)s"]
+                args += ["-o", "subtitle:\(tempFolder.path)/\(subtitleName).%(ext)s"]
             }
         }
         for range in timeRanges {
@@ -533,46 +594,138 @@ final class YtDlpModel {
             do {
                 try await runWithProgress(args: args)
                 // yt-dlp skips a section whose output path already exists
-                // ("already downloaded") without printing a Destination
-                // line, so a short count means clips are missing or stale.
-                // Fail loudly instead of reporting (or merging) a partial set.
+                // without printing a Destination line, so a short count
+                // means clips are missing. Fail loudly instead of
+                // reporting (or merging) a partial set.
                 if expectedSectionCount > 0, sectionOutputFiles.count != expectedSectionCount {
                     throw YtDlpError.processFailed(
-                        "Only \(sectionOutputFiles.count) of \(expectedSectionCount) clips were downloaded. "
-                        + "Some may already exist in the destination folder — rename or remove them and try again."
+                        "Only \(sectionOutputFiles.count) of \(expectedSectionCount) clips were downloaded."
                     )
                 }
-                if mergeSections, sectionOutputFiles.count > 1 {
-                    downloadPhase = .merging
-                    // Same fallback the section files themselves used: the
-                    // video title when no name was given.
-                    let mergedFileName = fileName.isEmpty
-                        ? (FilenamePolicy.sanitize(videoInfo?.title ?? "").nonEmpty ?? "download")
-                        : FilenamePolicy.sanitize(fileName)
-                    let mergedURL = try await concatenateSections(
-                        sectionOutputFiles,
-                        finalFileName: mergedFileName,
-                        into: destinationFolder
-                    )
-                    lastDownloadedFile = mergedURL
-                    downloadedFiles = [mergedURL]
-                } else if expectedSectionCount > 1 {
-                    downloadedFiles = sectionOutputFiles
-                } else if let lastDownloadedFile {
-                    downloadedFiles = [lastDownloadedFile]
+
+                // What the user asked for, still inside the scratch folder.
+                var primaryFiles: [URL]
+                if expectedSectionCount > 0 {
+                    primaryFiles = sectionOutputFiles
+                    if mergeSections, sectionOutputFiles.count > 1 {
+                        downloadPhase = .merging
+                        // Same fallback the section files themselves used:
+                        // the video title when no name was given.
+                        let mergedFileName = fileName.isEmpty
+                            ? (FilenamePolicy.sanitize(videoInfo?.title ?? "").nonEmpty ?? "download")
+                            : FilenamePolicy.sanitize(fileName)
+                        // Merged inside the scratch folder too, so the one
+                        // move below handles it like any other result.
+                        primaryFiles = [try await concatenateSections(
+                            sectionOutputFiles,
+                            finalFileName: mergedFileName,
+                            into: tempFolder
+                        )]
+                    }
+                } else {
+                    primaryFiles = lastDownloadedFile.map { [$0] } ?? []
                 }
-                downloadProgress = 1.0
+
+                // Move the results out to where the user actually asked
+                // for them, then delete the scratch folder (any leftover
+                // intermediate files yt-dlp didn't already clean up go
+                // with it). Off the main actor: across volumes this is a
+                // full copy.
+                let primary = primaryFiles
+                let outcome = await Task.detached {
+                    Self.moveOutputs(primary: primary, tempFolder: tempFolder, destinationFolder: destinationFolder)
+                }.value
+                if outcome.failed.isEmpty, !primary.isEmpty {
+                    downloadedFiles = outcome.moved
+                    lastDownloadedFile = outcome.moved.last
+                    try? FileManager.default.removeItem(at: tempFolder)
+                } else {
+                    // The download itself succeeded but never made it out,
+                    // so don't delete it (or let a later sweep) — report
+                    // the failure instead of a "Complete" card pointing
+                    // at a hidden folder.
+                    downloadedFiles = []
+                    lastDownloadedFile = nil
+                    errorMessage = primary.isEmpty
+                        ? "The download finished, but no output file was found. Anything yt-dlp wrote is in \(tempFolder.path)."
+                        : "The download finished, but couldn't be moved to \(destinationFolder.path). It's still at \(tempFolder.path)."
+                }
+                if errorMessage == nil { downloadProgress = 1.0 }
             } catch YtDlpError.cancelled {
                 // User-initiated; leave the UI clean rather than showing an
                 // error. wasCancelled is how callers still tell this apart
                 // from a genuine completion, since errorMessage alone can't.
                 wasCancelled = true
+                try? FileManager.default.removeItem(at: tempFolder)
             } catch {
                 errorMessage = error.diagnosticDescription
+                try? FileManager.default.removeItem(at: tempFolder)
             }
+            // Whether it was deleted or deliberately kept (failed move),
+            // it's no longer a leftover for a later launch to sweep.
+            ScratchFolderRegistry.unregister(tempFolder)
             isDownloading = false
             downloadPhase = .idle
         }
+        return true
+    }
+
+    /// Moves a finished download from its hidden scratch folder to
+    /// `destinationFolder`, re-resolving a unique name there (the same way
+    /// `FilenamePolicy.uniqueFilename` does before a download even starts)
+    /// in case two downloads targeting the same name both finish around
+    /// the same time — `FileManager.moveItem` never silently overwrites,
+    /// so without this the second one to finish would just fail to move
+    /// at all rather than risk clobbering the first. Returns `nil` if the
+    /// move couldn't be completed.
+    private nonisolated static func moveToDestination(_ file: URL, destinationFolder: URL) -> URL? {
+        let ext = file.pathExtension
+        let base = file.deletingPathExtension().lastPathComponent
+        // The name is re-resolved on each attempt: another download can
+        // claim it between the check and the move, and moveItem then fails
+        // rather than overwrite.
+        for _ in 0..<5 {
+            let uniqueBase = FilenamePolicy.uniqueFilename(base: base, in: destinationFolder)
+            let target = destinationFolder.appendingPathComponent(ext.isEmpty ? uniqueBase : "\(uniqueBase).\(ext)")
+            do {
+                try FileManager.default.moveItem(at: file, to: target)
+                return target
+            } catch {
+                if !FileManager.default.fileExists(atPath: file.path) { return nil }
+            }
+        }
+        return nil
+    }
+
+    /// Moves a download's results out of its scratch folder: each `primary`
+    /// file first (so its name is resolved before anything else can claim
+    /// it), then any other finished file left in the folder — a subtitle
+    /// sidecar, say. Partial-download leftovers are skipped. Returns the
+    /// primary files' new locations, in order, plus any that couldn't move.
+    private nonisolated static func moveOutputs(
+        primary: [URL],
+        tempFolder: URL,
+        destinationFolder: URL
+    ) -> (moved: [URL], failed: [URL]) {
+        var moved: [URL] = []
+        var failed: [URL] = []
+        for file in primary {
+            if let target = moveToDestination(file, destinationFolder: destinationFolder) {
+                moved.append(target)
+            } else {
+                failed.append(file)
+            }
+        }
+        let partialExtensions: Set<String> = ["part", "ytdl", "temp"]
+        let leftovers = (try? FileManager.default.contentsOfDirectory(
+            at: tempFolder, includingPropertiesForKeys: nil
+        )) ?? []
+        for file in leftovers where !primary.contains(file) && !partialExtensions.contains(file.pathExtension.lowercased()) {
+            if moveToDestination(file, destinationFolder: destinationFolder) == nil {
+                failed.append(file)
+            }
+        }
+        return (moved, failed)
     }
 
     /// Cancels the in-flight fetch or download, if any, by terminating the
@@ -739,6 +892,7 @@ final class YtDlpModel {
                 lines.append(line)
                 if reportProgress {
                     await processFFmpegStderrLine(line)
+                    await noteSubtitleFailure(line)
                 }
             }
             return lines
@@ -832,6 +986,13 @@ final class YtDlpModel {
 
     // MARK: Output parsing
 
+    /// Records a failed subtitle fetch (a warning, thanks to `--ignore-errors`)
+    /// so the completion screen can mention it.
+    private func noteSubtitleFailure(_ line: String) {
+        guard let match = line.firstMatch(of: /Unable to download video subtitles for '([^']+)': (.+)/) else { return }
+        subtitleFailureNote = "Couldn't download '\(match.1)' subtitles: \(match.2)"
+    }
+
     /// Interprets one line of ffmpeg's own stderr output during a sectioned
     /// (trimmed) download — a plain yt-dlp download never routes through
     /// this pipeline, and this is a no-op outside of one. ffmpeg's
@@ -845,6 +1006,10 @@ final class YtDlpModel {
         let targetDuration = sectionDurations[sectionsCompleted - 1]
         guard targetDuration > 0 else { return }
         downloadProgress = min(1.0, elapsed / targetDuration)
+        // A cut has no byte counts or transfer speed to show, so report how
+        // far into the clip ffmpeg is instead: "0:15 of 0:30".
+        downloadedSizeText = FlytFormat.duration(min(elapsed, targetDuration))
+        totalSizeText = FlytFormat.duration(targetDuration)
     }
 
     /// Extracts the "time=HH:MM:SS.ss" field ffmpeg prints on its own
@@ -927,7 +1092,8 @@ final class YtDlpModel {
         // video/audio progress this view tracks — see isDownloadingSubtitle above.
         if isDownloadingSubtitle {
             // Its own 100% line is the last thing it prints.
-            if Self.parseProgress(from: line) == 1.0 { isDownloadingSubtitle = false }
+            let fraction = Self.parseProgressTemplate(from: line)?.fraction ?? Self.parseProgress(from: line)
+            if fraction == 1.0 { isDownloadingSubtitle = false }
             return
         }
 
@@ -944,6 +1110,12 @@ final class YtDlpModel {
         // has size/speed/ETA but, for whatever reason, no percentage of
         // its own), which would make `downloadedSizeText` show a wrong
         // "X of Y" pairing rather than staying nil until real data exists.
+        if let snapshot = Self.parseProgressTemplate(from: line) {
+            apply(snapshot)
+            if let dest { lastDownloadedFile = URL(fileURLWithPath: dest) }
+            return
+        }
+
         let percent = Self.parseProgress(from: line)
         if let percent {
             downloadProgress = percent
@@ -951,8 +1123,10 @@ final class YtDlpModel {
 
         if let detail = Self.parseProgressDetail(from: line) {
             totalSizeText = detail.total
-            speedText = detail.speed
-            etaText = detail.eta
+            // Kept from the previous line when this one has a placeholder
+            // ("Unknown B/s"), so the readout doesn't flicker to blank.
+            if let speed = detail.speed { speedText = speed }
+            if let eta = detail.eta { etaText = eta }
             // yt-dlp only prints the *total* size per progress line, not
             // how much has landed so far, so derive that from this same
             // line's own percentage — only when this line actually has one.
@@ -964,6 +1138,26 @@ final class YtDlpModel {
 
         if let dest {
             lastDownloadedFile = URL(fileURLWithPath: dest)
+        }
+    }
+
+    /// Publishes one progress update: the bar, "X of Y", speed and time left.
+    /// A field yt-dlp has no value for is left as it was rather than blanked,
+    /// so the readout doesn't flicker between updates.
+    private func apply(_ snapshot: ProgressSnapshot) {
+        if let fraction = snapshot.fraction { downloadProgress = fraction }
+        if let total = snapshot.totalBytes {
+            // "~" marks an estimate, which fragmented streams refine as they go.
+            totalSizeText = (snapshot.totalIsEstimate ? "~" : "") + FlytFormat.fileSize(total)
+            if let downloaded = snapshot.downloadedBytes {
+                downloadedSizeText = FlytFormat.fileSize(min(downloaded, total))
+            }
+        }
+        if let speed = snapshot.bytesPerSecond, speed > 0 {
+            speedText = FlytFormat.fileSize(Int64(speed)) + "/s"
+        }
+        if let eta = snapshot.etaSeconds {
+            etaText = FlytFormat.duration(Double(eta))
         }
     }
 
@@ -987,18 +1181,77 @@ final class YtDlpModel {
         return Double(match.1).map { $0 / 100.0 }
     }
 
+    /// The `--progress-template` passed to yt-dlp: the raw numbers, "NA" where
+    /// yt-dlp has none, separated by "|" after a marker `parseProgressTemplate` looks for.
+    nonisolated static let progressTemplate = "download:[download] flytprog|"
+        + "%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|"
+        + "%(progress.speed)s|%(progress.eta)s|%(progress.fragment_index)s|%(progress.fragment_count)s"
+
+    /// One progress update as yt-dlp reports it.
+    struct ProgressSnapshot: Equatable {
+        var downloadedBytes: Int64?
+        var totalBytes: Int64?
+        /// True when `totalBytes` is yt-dlp's estimate (fragmented streams
+        /// don't know their real size up front) rather than an exact size.
+        var totalIsEstimate: Bool
+        var bytesPerSecond: Double?
+        var etaSeconds: Int?
+        var fragmentIndex: Int?
+        var fragmentCount: Int?
+
+        /// 0...1, from bytes when a total is known, else from fragments.
+        var fraction: Double? {
+            if let downloadedBytes, let totalBytes, totalBytes > 0 {
+                return min(1, Double(downloadedBytes) / Double(totalBytes))
+            }
+            if let fragmentIndex, let fragmentCount, fragmentCount > 0 {
+                return min(1, Double(fragmentIndex) / Double(fragmentCount))
+            }
+            return nil
+        }
+    }
+
+    /// Parses a line produced by `progressTemplate`; nil for any other line.
+    nonisolated static func parseProgressTemplate(from line: String) -> ProgressSnapshot? {
+        guard let marker = line.range(of: "flytprog|") else { return nil }
+        let fields = line[marker.upperBound...].split(separator: "|", omittingEmptySubsequences: false)
+        guard fields.count >= 7 else { return nil }
+        func number(_ field: Substring) -> Double? {
+            let text = field.trimmingCharacters(in: .whitespaces)
+            return text == "NA" ? nil : Double(text)
+        }
+        let exactTotal = number(fields[1])
+        let estimatedTotal = number(fields[2])
+        return ProgressSnapshot(
+            downloadedBytes: number(fields[0]).map { Int64($0) },
+            totalBytes: (exactTotal ?? estimatedTotal).map { Int64($0) },
+            totalIsEstimate: exactTotal == nil && estimatedTotal != nil,
+            bytesPerSecond: number(fields[3]),
+            etaSeconds: number(fields[4]).map { Int($0) },
+            fragmentIndex: number(fields[5]).map { Int($0) },
+            fragmentCount: number(fields[6]).map { Int($0) }
+        )
+    }
+
     /// Extracts the unit-formatted total size, speed, and ETA yt-dlp prints
     /// on its own progress line, e.g. "[download]  46.5% of ~74.32MiB at
     /// 4.10MiB/s ETA 00:12" — already human-readable, so passed through as-is
     /// rather than re-parsed into raw numbers (`parseByteCount` below only
     /// exists to derive the downloaded-so-far figure, which yt-dlp doesn't
-    /// print directly). The ETA group requires a leading digit so a literal
-    /// "ETA Unknown" — which HLS/DASH streams print for long stretches —
-    /// fails to match here, same as the already-numeric-only speed group,
-    /// rather than surfacing a useless "Unknown left" in the UI.
-    private nonisolated static func parseProgressDetail(from line: String) -> (total: String, speed: String, eta: String)? {
-        guard let match = line.firstMatch(of: /of\s+~?([\d.]+\w+)\s+at\s+([\d.]+\w+\/s)\s+ETA\s+(\d\S*)/) else { return nil }
-        return (total: String(match.1), speed: String(match.2), eta: String(match.3))
+    /// print directly).
+    ///
+    /// Each field is read on its own, because yt-dlp routinely prints some
+    /// of them as placeholders: an estimated total is padded after the "~"
+    /// ("of ~  1.07GiB"), speed can be "Unknown B/s", and ETA "Unknown" —
+    /// especially on fragmented HLS/DASH streams, where that's most of the
+    /// download. Requiring all three to parse would drop the size too.
+    /// Speed and ETA that aren't a real value come back nil rather than
+    /// surfacing "Unknown left" in the UI. Nil overall if there's no size.
+    nonisolated static func parseProgressDetail(from line: String) -> (total: String, speed: String?, eta: String?)? {
+        guard let total = line.firstMatch(of: /of\s+~?\s*(\d[\d.]*\w+)/) else { return nil }
+        let speed = line.firstMatch(of: /\bat\s+(\d[\d.]*\w+\/s)/).map { String($0.1) }
+        let eta = line.firstMatch(of: /ETA\s+(\d\S*)/).map { String($0.1) }
+        return (total: String(total.1), speed: speed, eta: eta)
     }
 
     /// Parses a yt-dlp size string like "74.32MiB" into raw bytes. Only

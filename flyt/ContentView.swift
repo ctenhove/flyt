@@ -7,89 +7,62 @@
 
 import SwiftUI
 
-/// The app's main window: paste a video URL, fetch its metadata, and download
-/// it to the destination folder with live progress. Composes the redesigned
-/// per-state views (README §3.2–3.8); this file owns state and wiring, not
-/// layout — each state's actual UI lives in `Views/`.
+/// The app's main window: paste video URLs and download them concurrently
+/// with live progress, each independent of the others. Owns the list of
+/// in-flight items and the shared destination/coordinator/history — each
+/// item's own fetch → configure → download → complete lifecycle lives in
+/// `DownloadItemCard`.
 struct ContentView: View {
 
-    private enum Phase {
-        case idle, fetching, ready, downloading, complete, error
+    /// One card in the list: pairs a freshly-created `YtDlpModel` with the
+    /// URL it was started for and a stable identity `ForEach` can diff on.
+    private struct Item: Identifiable {
+        let id = UUID()
+        let urlString: String
+        let model: YtDlpModel
+        let settings = DownloadItemSettings()
     }
 
-    @State private var urlString: String = ""
-    /// nil means "don't download this track".
-    @State private var selectedVideoFormatID: String?
-    /// nil means "don't download this track".
-    @State private var selectedAudioFormatID: String?
-    @State private var selectedOutputContainer: OutputContainer = .mp4
-    @State private var destinationFolder: URL = YtDlpModel.defaultDownloadsDirectory
-    /// The filename without its extension; the real extension is appended by yt-dlp.
-    @State private var filename: String = ""
-    /// Latches true once the user edits `filename` directly; only "Reset to
-    /// video title" clears it. Prevents a metadata/format change from
-    /// clobbering a name the user chose on purpose.
-    @State private var filenameIsCustom = false
-    @State private var optionsExpanded = false
-    @State private var audioOnly = false
-    /// The video format to restore when "Audio only" is turned back off.
-    @State private var lastVideoFormatID: String?
-    @State private var subtitlesEnabled = false
-    @State private var selectedSubtitleLanguageCode: String?
-    /// Mux subtitles into the video file instead of writing a sidecar file.
-    /// Defaults on: embedding is what most people expect from "download
-    /// subtitles" — a loose .srt/.vtt file alongside the video is the
-    /// opt-out, not the default.
-    @State private var embedSubtitles = true
-    /// Name for the sidecar subtitle file (no extension). Follows the video
-    /// filename until the user types their own.
-    @State private var subtitleFilename = ""
-    @State private var subtitleFilenameIsCustom = false
-    @State private var trimEnabled = false
-    @State private var timeRanges: [VideoTimeRange] = []
-    /// Only meaningful with more than one range: concatenate them into a
-    /// single output file instead of one file per range.
-    @State private var mergeSections = false
+    /// Cards past this count switch the list into a fixed-height scroll
+    /// box instead of growing freely — the window has no height cap of its
+    /// own (see `FlytApp`'s `.windowResizability`), and each card is tall
+    /// enough that even two or three of them can push the window past a
+    /// laptop's usable height. Below the threshold there's no ScrollView
+    /// at all: one constrained only by `maxHeight` has nothing concrete to
+    /// size itself against in this content-driven-sizing window and
+    /// collapses to zero height instead of showing anything.
+    private static let scrollThreshold = 1
+    private static let scrollHeight: CGFloat = 480
 
-    @State private var showingComplete = false
-    @State private var downloadStartedAt: Date?
-    @State private var lastCompletedElapsed: Double?
-    /// Drives the titlebar mark's one-shot completion pulse (see `MainWindowChrome`).
+    @State private var newURLString: String = ""
+    @State private var destinationFolder: URL = YtDlpModel.defaultDownloadsDirectory
+    @State private var items: [Item] = []
+
+    @State private var coordinator = DownloadCoordinator()
+    @State private var historyStore = DownloadHistoryStore()
+    @State private var showingHistory = false
+    /// Drives the titlebar mark's one-shot completion pulse (see
+    /// `MainWindowChrome`) — shared across every card rather than
+    /// per-card, since it's a titlebar effect and there's only one titlebar.
     @State private var markPulse = false
 
-    @State private var model: YtDlpModel
     private let dependencyManager: DependencyManager
 
-    /// Video-capable formats for the current video, in yt-dlp's own order.
-    /// Cached rather than recomputed on every body evaluation — SwiftUI
-    /// re-evaluates body many times a second while downloadProgress updates,
-    /// and re-filtering the full formats list on every one of those ticks
-    /// would be wasted work, since the list only actually changes once per fetch.
-    @State private var videoFormats: [VideoFormat] = []
-    @State private var audioFormats: [VideoFormat] = []
-    /// Derived from videoFormats/audioFormats and cached alongside them for
-    /// the same reason: filtering/grouping/sorting them fresh on every body
-    /// evaluation would repeat that work many times a second while
-    /// downloadProgress updates, even though the options themselves only
-    /// change once per fetch.
-    @State private var resolutionOptions: [FormatSelection.ResolutionOption] = []
-    @State private var audioOptions: [FormatSelection.AudioOption] = []
-    @State private var subtitleLanguageOptions: [SubtitleSelection.LanguageOption] = []
-
     /// Debounces auto-fetch so a pasted/dropped link fetches automatically
-    /// (README §4) without spawning a yt-dlp process on every keystroke
-    /// while a URL is still being typed out by hand.
+    /// without spawning a yt-dlp process on every keystroke while a URL is
+    /// still being typed out by hand.
     @State private var pendingFetchTask: Task<Void, Never>?
 
     init(dependencyManager: DependencyManager) {
-        _model = State(wrappedValue: YtDlpModel(dependencyManager: dependencyManager))
         self.dependencyManager = dependencyManager
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            urlField
-            phaseContent
+            newURLField
+            itemsList
+            FooterPathRow(destinationFolder: destinationFolder, ytdlpVersion: dependencyManager.installedYtdlpVersion, onChange: chooseDestinationFolder)
+                .frame(maxWidth: .infinity, alignment: .center)
         }
         .padding(.horizontal, 20)
         .padding(.top, 20)
@@ -98,347 +71,77 @@ struct ContentView: View {
         .background(Color.flytSurface)
         .toolbar {
             MainWindowTitlebar(pulse: markPulse)
+            ToolbarItem(placement: .primaryAction) {
+                Button(action: { showingHistory = true }) {
+                    Image(systemName: "clock.arrow.circlepath")
+                }
+                .help("Download history")
+            }
         }
-        .animation(.easeOut(duration: 0.2), value: optionsExpanded)
-        .onChange(of: urlString) {
-            resetFetchedState()
+        .onChange(of: newURLString) {
             scheduleAutoFetch()
         }
-        .onChange(of: model.videoInfo) { _, info in
-            guard let info else { return }
-            videoFormats = Self.sortedFormats(info.formats) { $0.hasVideo }
-            audioFormats = Self.sortedFormats(info.formats) { $0.isAudioOnly }
-            resolutionOptions = FormatSelection.resolutionOptions(in: videoFormats)
-            audioOptions = FormatSelection.audioOptions(in: audioFormats)
-            subtitleLanguageOptions = SubtitleSelection.languageOptions(
-                subtitles: info.subtitles,
-                automaticCaptions: info.automaticCaptions
-            )
-            if selectedVideoFormatID == nil {
-                selectedVideoFormatID = videoFormats.first?.id
-            }
-            if selectedAudioFormatID == nil {
-                selectedAudioFormatID = audioFormats.first?.id
-            }
-            // A code left over from a previous fetch may no longer be on
-            // offer; an unmatched code would silently download no subtitles.
-            if !subtitleLanguageOptions.contains(where: { $0.code == selectedSubtitleLanguageCode }) {
-                selectedSubtitleLanguageCode = subtitleLanguageOptions.first?.code
-            }
-            if subtitleLanguageOptions.isEmpty {
-                subtitlesEnabled = false
-            }
-            if !filenameIsCustom {
-                filename = FilenamePolicy.sanitize(info.title)
-            }
-        }
-        .onChange(of: audioOnly) { _, isOn in
-            // embedSubtitles is left as-is while audioOnly is on: the toggle
-            // is hidden (there's no video track to embed into) and
-            // startDownload() already gates on `&& !audioOnly`, so its
-            // stored value only matters again once a video track returns.
-            if isOn {
-                lastVideoFormatID = selectedVideoFormatID
-                selectedVideoFormatID = nil
-            } else {
-                selectedVideoFormatID = lastVideoFormatID ?? videoFormats.first?.id
-            }
-        }
-        .onChange(of: trimEnabled) { _, isOn in
-            guard isOn, timeRanges.isEmpty, let duration = model.videoInfo?.duration else { return }
-            var range = VideoTimeRange(start: 0, end: 30)
-            range.clamp(to: duration)
-            timeRanges = [range]
-        }
-        .onChange(of: model.isDownloading) { wasDownloading, isDownloading in
-            guard wasDownloading, !isDownloading else { return }
-            defer { downloadStartedAt = nil }
-            // A cancelled download also leaves errorMessage nil (see
-            // YtDlpModel.download's cancellation branch), so that check
-            // alone can't tell a genuine completion apart from a cancel.
-            guard model.errorMessage == nil, !model.wasCancelled else { return }
-            if let downloadStartedAt {
-                lastCompletedElapsed = Date().timeIntervalSince(downloadStartedAt)
-            }
-            showingComplete = true
-            pulseMark()
+        .sheet(isPresented: $showingHistory) {
+            HistoryView(store: historyStore, onRedownload: { urlString in
+                showingHistory = false
+                addItem(urlString: urlString)
+            })
         }
     }
 
-    // MARK: Phase
-
-    private var phase: Phase {
-        if showingComplete { return .complete }
-        if model.errorMessage != nil { return .error }
-        if model.isDownloading { return .downloading }
-        if model.isLoading { return .fetching }
-        if model.videoInfo != nil { return .ready }
-        return .idle
-    }
+    // MARK: List
 
     @ViewBuilder
-    private var urlField: some View {
-        switch phase {
-        case .idle:
-            URLField(text: $urlString, tone: .neutral, trailing: urlString.isEmpty ? .hint : .none)
-                .onSubmit(fetchNow)
-        case .fetching:
-            URLField(text: $urlString, tone: .focused, trailing: .fetching)
-        case .ready, .complete:
-            URLField(text: $urlString, tone: .focused, trailing: .none)
-        case .downloading:
-            // Disabled rather than just visually focused: editing the URL
-            // mid-download used to blank the progress view without
-            // actually stopping the download running underneath it.
-            URLField(text: $urlString, tone: .focused, trailing: .none)
-                .disabled(true)
-                .opacity(0.6)
-        case .error:
-            URLField(text: $urlString, tone: .error, trailing: .none)
-                .onSubmit(fetchNow)
-        }
-    }
-
-    @ViewBuilder
-    private var phaseContent: some View {
-        switch phase {
-        case .idle:
+    private var newURLField: some View {
+        URLField(text: $newURLString, tone: .neutral, trailing: newURLString.isEmpty ? .hint : .none)
+            .onSubmit(fetchNow)
+        if items.isEmpty {
             IdleDropZone(onDropURL: handleIncomingURL)
-            FooterPathRow(destinationFolder: destinationFolder, ytdlpVersion: dependencyManager.installedYtdlpVersion, onChange: chooseDestinationFolder)
-                .frame(maxWidth: .infinity, alignment: .center)
+        }
+    }
 
-        case .fetching:
-            FetchingSkeleton()
-
-        case .ready:
-            if let info = model.videoInfo {
-                VideoSummaryCard(info: info)
-
-                if optionsExpanded {
-                    OptionsCard(
-                        filename: filenameBinding,
-                        fileExtension: previewExtension,
-                        filenameIsCustom: filenameIsCustom,
-                        onResetFilename: resetFilenameToTitle,
-                        resolutionOptions: resolutionOptions,
-                        selectedHeight: heightBinding,
-                        selectedContainer: $selectedOutputContainer,
-                        audioOptions: audioOptions,
-                        selectedAudioExt: audioExtBinding,
-                        audioOnly: $audioOnly,
-                        subtitleLanguageOptions: subtitleLanguageOptions,
-                        subtitlesEnabled: $subtitlesEnabled,
-                        selectedSubtitleLanguageCode: $selectedSubtitleLanguageCode,
-                        embedSubtitles: $embedSubtitles,
-                        subtitleFilename: subtitleFilenameBinding,
-                        subtitleFilenameIsCustom: subtitleFilenameIsCustom,
-                        onResetSubtitleFilename: { subtitleFilenameIsCustom = false },
-                        duration: info.duration,
-                        trimEnabled: $trimEnabled,
-                        timeRanges: $timeRanges,
-                        mergeSections: $mergeSections,
-                        onCollapse: { optionsExpanded = false }
-                    )
-                } else {
-                    FilenameField(
-                        filename: filenameBinding,
-                        fileExtension: previewExtension,
-                        isCustom: filenameIsCustom,
-                        onReset: resetFilenameToTitle,
-                        style: .main
-                    )
-                    OptionsSummaryRow(
-                        segments: summarySegments,
-                        estimatedSizeText: estimatedSizeText,
-                        onTap: { optionsExpanded = true }
-                    )
-                }
-
-                DownloadPrimaryButton(trailingText: estimatedSizeText, action: startDownload)
-                FooterPathRow(destinationFolder: destinationFolder, ytdlpVersion: dependencyManager.installedYtdlpVersion, onChange: chooseDestinationFolder)
-                    .frame(maxWidth: .infinity, alignment: .center)
+    @ViewBuilder
+    private var itemsList: some View {
+        if items.count > Self.scrollThreshold {
+            ScrollView {
+                cards
+                    .padding(.trailing, 14)
             }
+            .frame(height: Self.scrollHeight)
+        } else {
+            cards
+        }
+    }
 
-        case .downloading:
-            if let info = model.videoInfo {
-                DownloadingProgress(
-                    info: info,
-                    phase: model.downloadPhase,
-                    progress: model.downloadProgress,
-                    downloadedSizeText: model.downloadedSizeText,
-                    totalSizeText: model.totalSizeText,
-                    speedText: model.speedText,
-                    etaText: model.etaText,
-                    phaseLabel: downloadPhaseLabel,
-                    onCancel: model.cancel
-                )
-            }
-
-        case .complete:
-            if !model.downloadedFiles.isEmpty {
-                CompleteCard(
-                    savedFiles: model.downloadedFiles,
-                    thumbnailURLString: model.videoInfo?.thumbnail,
-                    resolutionLabel: resolutionSummaryLabel,
-                    containerLabel: willMerge ? selectedOutputContainer.label : nil,
-                    audioLabel: selectedAudioFormat?.ext,
+    private var cards: some View {
+        VStack(spacing: 14) {
+            ForEach(items) { item in
+                DownloadItemCard(
+                    originalURLString: item.urlString,
+                    model: item.model,
                     destinationFolder: destinationFolder,
-                    savedSizeBytes: estimatedSizeBytes,
-                    elapsedSeconds: lastCompletedElapsed,
-                    onShowInFinder: { NSWorkspace.shared.activateFileViewerSelecting(model.downloadedFiles) },
-                    onDownloadAnother: resetForNewDownload
+                    coordinator: coordinator,
+                    historyStore: historyStore,
+                    onRemove: { remove(item) },
+                    onComplete: pulseMark,
+                    settings: item.settings
                 )
-            }
-
-        case .error:
-            if let raw = model.errorMessage {
-                ErrorCard(
-                    error: FlytError(rawMessage: raw),
-                    onTryAgain: retryFetch,
-                    onPasteDifferentLink: resetForNewDownload
-                )
+                // Not enough on its own: `itemsList` wraps this same view in
+                // a ScrollView once there's more than one item, and that
+                // structural change still makes SwiftUI rebuild existing
+                // cards, resetting their @State. That's why each card's
+                // configuration lives in `item.settings` instead.
+                .id(item.id)
             }
         }
     }
 
-    // MARK: Derived selection state
-
-    /// Filters and sorts `formats` best-quality-first. When two formats tie
-    /// on quality (a common case: the same resolution/bitrate offered over
-    /// both plain HTTP and HLS), prefers the one with reliable progress
-    /// reporting — see `VideoFormat.hasReliableProgress` — so the default
-    /// pick (the array's first element) doesn't default into a format whose
-    /// download UI shows a jumpy size estimate for no quality benefit.
-    private static func sortedFormats(_ formats: [VideoFormat], where predicate: (VideoFormat) -> Bool) -> [VideoFormat] {
-        formats.filter(predicate).sorted {
-            $0.qualityRank != $1.qualityRank
-                ? $0.qualityRank > $1.qualityRank
-                : $0.hasReliableProgress && !$1.hasReliableProgress
-        }
-    }
-
-    private var selectedVideoFormat: VideoFormat? {
-        videoFormats.first { $0.id == selectedVideoFormatID }
-    }
-
-    private var selectedAudioFormat: VideoFormat? {
-        audioFormats.first { $0.id == selectedAudioFormatID }
-    }
-
-    private var selectedSubtitleLanguage: SubtitleSelection.LanguageOption? {
-        guard subtitlesEnabled else { return nil }
-        return subtitleLanguageOptions.first { $0.code == selectedSubtitleLanguageCode }
-    }
-
-    /// True when both a video and an audio track are selected, meaning
-    /// yt-dlp will actually mux them — the only time the container choice matters.
-    private var willMerge: Bool {
-        selectedVideoFormatID != nil && selectedAudioFormatID != nil
-    }
-
-    /// "Video"/"Audio" while a two-stream (merged) download is fetching one
-    /// of its tracks, or "Section N of M" while trimming — in both cases
-    /// the progress bar's restart from 100% back to 0% between
-    /// tracks/sections needs a label or it reads as a glitch rather than a
-    /// new stream/section starting. nil for a single-stream, single-range
-    /// download, and during merging itself (its own dedicated row, not a
-    /// percentage).
-    private var downloadPhaseLabel: String? {
-        switch model.downloadPhase {
-        case .downloadingVideo: return willMerge ? "Video" : nil
-        case .downloadingAudio: return willMerge ? "Audio" : nil
-        case .trimmingSection(let index, let total): return total > 1 ? "Section \(index) of \(total)" : nil
-        case .idle, .merging: return nil
-        }
-    }
-
-    /// A best-effort preview of the final file extension, shown next to the
-    /// filename field. yt-dlp determines the real one at download time.
-    private var previewExtension: String {
-        if willMerge { return selectedOutputContainer.rawValue }
-        if let format = selectedVideoFormat { return format.ext }
-        if let format = selectedAudioFormat { return format.ext }
-        return selectedOutputContainer.rawValue
-    }
-
-    private var resolutionSummaryLabel: String? {
-        selectedVideoFormat?.height.map { "\($0)p" }
-    }
-
-    private var summarySegments: [String] {
-        var segments: [String] = []
-        if let resolutionSummaryLabel { segments.append(resolutionSummaryLabel) }
-        if selectedVideoFormatID != nil { segments.append(selectedOutputContainer.label.uppercased()) }
-        if let ext = selectedAudioFormat?.ext { segments.append(ext.uppercased()) }
-        if let selectedSubtitleLanguage { segments.append("\(selectedSubtitleLanguage.code.uppercased()) CC") }
-        if trimEnabled, !timeRanges.isEmpty {
-            segments.append(timeRanges.count > 1 ? "\(timeRanges.count) CLIPS" : "TRIMMED")
-        }
-        return segments
-    }
-
-    /// The full-video estimate scaled down to the trimmed portion when
-    /// trimming is active: a known `filesize`/`filesizeApprox` is for the
-    /// *whole* stream, so without this a 10-second clip out of an hour-long
-    /// video would still show the full video's size.
-    private var estimatedSizeBytes: Int64? {
-        guard let fullEstimate = FormatSelection.estimatedSizeBytes(
-            video: selectedVideoFormat,
-            audio: selectedAudioFormat,
-            durationSeconds: model.videoInfo?.duration
-        ) else { return nil }
-        guard trimEnabled, !timeRanges.isEmpty,
-              let fullDuration = model.videoInfo?.duration, fullDuration > 0 else {
-            return fullEstimate
-        }
-        let trimmedDuration = timeRanges.reduce(0) { $0 + max(0, $1.end - $1.start) }
-        return Int64(Double(fullEstimate) * (trimmedDuration / fullDuration))
-    }
-
-    private var estimatedSizeText: String? {
-        estimatedSizeBytes.map { "≈ \(FlytFormat.fileSize($0))" }
-    }
-
-    /// Translates the simplified resolution-chip/audio-segment selections
-    /// back to the specific `format_id`s `YtDlpModel.download` expects.
-    private var heightBinding: Binding<Int?> {
-        Binding(
-            get: { selectedVideoFormat?.height },
-            set: { newHeight in
-                guard let newHeight, let match = resolutionOptions.first(where: { $0.height == newHeight }) else { return }
-                selectedVideoFormatID = match.format.id
-            }
-        )
-    }
-
-    private var audioExtBinding: Binding<String?> {
-        Binding(
-            get: { selectedAudioFormat?.ext },
-            set: { newExt in
-                guard let newExt, let match = audioOptions.first(where: { $0.ext == newExt }) else { return }
-                selectedAudioFormatID = match.format.id
-            }
-        )
-    }
-
-    /// Wraps `filename` so an edit made *through this binding* (i.e. by the
-    /// user typing) latches `filenameIsCustom`, while programmatic updates
-    /// elsewhere (new metadata, "Reset to video title") can still set
-    /// `filename` directly without tripping the latch.
-    private var filenameBinding: Binding<String> {
-        Binding(
-            get: { filename },
-            set: { newValue in
-                filename = newValue
-                filenameIsCustom = true
-            }
-        )
-    }
+    // MARK: Actions
 
     /// True if `urlString` parses as an http(s) URL with a host — cheap
     /// client-side validation before handing it to yt-dlp, which otherwise
     /// only reports a malformed URL after a slow subprocess round-trip.
-    private var isValidURL: Bool {
+    private func isValidURL(_ urlString: String) -> Bool {
         guard let url = URL(string: urlString.trimmingCharacters(in: .whitespacesAndNewlines)),
               let scheme = url.scheme?.lowercased(),
               scheme == "http" || scheme == "https",
@@ -448,139 +151,44 @@ struct ContentView: View {
         return true
     }
 
-    // MARK: Actions
-
-    /// Clears the previously fetched video and its dependent selections, so
-    /// stale state from one video can't be sent alongside a different URL.
-    /// Also cancels an in-flight fetch, since it's for a URL the field no
-    /// longer shows, and drops out of the complete/error screens back to
-    /// the normal fetch flow — entering a new URL anywhere, including on
-    /// the completed-download screen, should behave the same way: fetch
-    /// the new video and let the user download it, not get stuck showing
-    /// the previous one.
-    private func resetFetchedState() {
-        if model.isLoading { model.cancel() }
-        model.videoInfo = nil
-        model.errorMessage = nil
-        showingComplete = false
-        lastCompletedElapsed = nil
-        selectedVideoFormatID = nil
-        selectedAudioFormatID = nil
-        lastVideoFormatID = nil
-        filename = ""
-        filenameIsCustom = false
-        videoFormats = []
-        audioFormats = []
-        resolutionOptions = []
-        audioOptions = []
-        optionsExpanded = false
-        audioOnly = false
-        subtitleLanguageOptions = []
-        subtitlesEnabled = false
-        selectedSubtitleLanguageCode = nil
-        embedSubtitles = true
-        subtitleFilename = ""
-        subtitleFilenameIsCustom = false
-        trimEnabled = false
-        timeRanges = []
-        mergeSections = false
-    }
-
-    /// Shows the video filename until the user edits it, so the two stay in
-    /// step by default; typing latches `subtitleFilenameIsCustom`.
-    private var subtitleFilenameBinding: Binding<String> {
-        Binding(
-            get: { subtitleFilenameIsCustom ? subtitleFilename : filename },
-            set: {
-                subtitleFilename = $0
-                subtitleFilenameIsCustom = true
-            }
-        )
-    }
-
-    private func resetFilenameToTitle() {
-        filenameIsCustom = false
-        if let title = model.videoInfo?.title {
-            filename = FilenamePolicy.sanitize(title)
-        }
-    }
-
     /// Debounces ~500ms after the last edit before fetching, so a pasted or
     /// dropped link (a single field mutation) fetches automatically without
     /// spawning a yt-dlp process on every keystroke of manual typing.
     private func scheduleAutoFetch() {
         pendingFetchTask?.cancel()
-        guard isValidURL else { return }
-        let snapshot = urlString
+        guard isValidURL(newURLString) else { return }
+        let snapshot = newURLString
         pendingFetchTask = Task {
             try? await Task.sleep(for: .milliseconds(500))
-            guard !Task.isCancelled, snapshot == urlString else { return }
+            guard !Task.isCancelled, snapshot == newURLString else { return }
             fetchNow()
         }
     }
 
     private func fetchNow() {
         pendingFetchTask?.cancel()
-        guard isValidURL, !model.isBusy else { return }
-        model.fetchInfo(for: urlString)
-    }
-
-    private func retryFetch() {
-        model.errorMessage = nil
-        fetchNow()
+        guard isValidURL(newURLString) else { return }
+        addItem(urlString: newURLString)
     }
 
     private func handleIncomingURL(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        urlString = trimmed
+        addItem(urlString: trimmed)
     }
 
-    private func resetForNewDownload() {
-        showingComplete = false
-        urlString = ""
+    /// Starts a new independent download item and clears the input field
+    /// so it's ready for the next link — unlike the single-download
+    /// window this replaces, the field represents "what to add next", not
+    /// "the current video".
+    private func addItem(urlString: String) {
+        let model = YtDlpModel(dependencyManager: dependencyManager)
+        items.insert(Item(urlString: urlString, model: model), at: 0)
+        newURLString = ""
     }
 
-    /// Opens a native folder picker defaulted to `destinationFolder`.
-    private func chooseDestinationFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        panel.canCreateDirectories = true
-        panel.directoryURL = destinationFolder
-        panel.prompt = "Choose"
-        if panel.runModal() == .OK, let url = panel.url {
-            destinationFolder = url
-        }
-    }
-
-    private func startDownload() {
-        guard let info = model.videoInfo else { return }
-        let base = filename.isEmpty ? FilenamePolicy.sanitize(info.title) : FilenamePolicy.sanitize(filename)
-        let uniqueBase = FilenamePolicy.uniqueFilename(
-            base: base.isEmpty ? "download" : base,
-            in: destinationFolder,
-            sectioned: trimEnabled && timeRanges.count > 1
-        )
-        let sidecarBase = FilenamePolicy.sanitize(subtitleFilenameIsCustom ? subtitleFilename : "")
-        let uniqueSubtitleBase = sidecarBase.isEmpty
-            ? ""
-            : FilenamePolicy.uniqueFilename(base: sidecarBase, in: destinationFolder)
-        downloadStartedAt = Date()
-        model.download(
-            urlString: urlString,
-            videoFormatId: selectedVideoFormatID,
-            audioFormatId: selectedAudioFormatID,
-            outputContainer: selectedOutputContainer,
-            destinationFolder: destinationFolder,
-            fileName: uniqueBase,
-            subtitleLanguage: selectedSubtitleLanguage,
-            embedSubtitles: embedSubtitles && !audioOnly,
-            subtitleFileName: uniqueSubtitleBase,
-            timeRanges: trimEnabled ? timeRanges : [],
-            mergeSections: mergeSections
-        )
+    private func remove(_ item: Item) {
+        items.removeAll { $0.id == item.id }
     }
 
     private func pulseMark() {
@@ -592,6 +200,22 @@ struct ContentView: View {
             withAnimation(.easeOut(duration: 0.16)) {
                 markPulse = false
             }
+        }
+    }
+
+    /// Opens a native folder picker defaulted to `destinationFolder`. Only
+    /// affects where downloads started after this point save to — see
+    /// `DownloadItemCard.destinationFolder`'s note on why it's a snapshot.
+    private func chooseDestinationFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.directoryURL = destinationFolder
+        panel.prompt = "Choose"
+        if panel.runModal() == .OK, let url = panel.url {
+            destinationFolder = url
         }
     }
 }
