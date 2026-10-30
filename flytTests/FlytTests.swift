@@ -83,6 +83,33 @@ struct FlytTests {
         #expect(DependencyManager.parseSHA256(forFilename: "yt-dlp_macos", fromSumsFileContents: "") == nil)
     }
 
+    // MARK: YtDlpModel.parseProgressDetail
+
+    @Test func parsesAPlainProgressLine() {
+        let detail = YtDlpModel.parseProgressDetail(from: "[download]  46.5% of   74.32MiB at    4.10MiB/s ETA 00:12")
+        #expect(detail?.total == "74.32MiB")
+        #expect(detail?.speed == "4.10MiB/s")
+        #expect(detail?.eta == "00:12")
+    }
+
+    @Test func parsesAnEstimatedTotalPaddedAfterTheTilde() {
+        let detail = YtDlpModel.parseProgressDetail(from: "[download]  14.0% of ~   1.07GiB at    2.45MiB/s ETA 07:12 (frag 12/80)")
+        #expect(detail?.total == "1.07GiB")
+        #expect(detail?.speed == "2.45MiB/s")
+        #expect(detail?.eta == "07:12")
+    }
+
+    @Test func unknownSpeedAndEtaStillYieldTheTotalSize() {
+        let detail = YtDlpModel.parseProgressDetail(from: "[download]   0.3% of ~ 512.00MiB at  Unknown B/s ETA Unknown")
+        #expect(detail?.total == "512.00MiB")
+        #expect(detail?.speed == nil)
+        #expect(detail?.eta == nil)
+    }
+
+    @Test func aLineWithNoSizeIsNotProgressDetail() {
+        #expect(YtDlpModel.parseProgressDetail(from: "[download] Destination: video.mp4") == nil)
+    }
+
     // MARK: DownloadCoordinator
 
     @Test func slotIsAvailableInitially() {

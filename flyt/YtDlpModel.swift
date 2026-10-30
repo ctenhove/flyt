@@ -1086,8 +1086,10 @@ final class YtDlpModel {
 
         if let detail = Self.parseProgressDetail(from: line) {
             totalSizeText = detail.total
-            speedText = detail.speed
-            etaText = detail.eta
+            // Kept from the previous line when this one has a placeholder
+            // ("Unknown B/s"), so the readout doesn't flicker to blank.
+            if let speed = detail.speed { speedText = speed }
+            if let eta = detail.eta { etaText = eta }
             // yt-dlp only prints the *total* size per progress line, not
             // how much has landed so far, so derive that from this same
             // line's own percentage — only when this line actually has one.
@@ -1127,13 +1129,20 @@ final class YtDlpModel {
     /// 4.10MiB/s ETA 00:12" — already human-readable, so passed through as-is
     /// rather than re-parsed into raw numbers (`parseByteCount` below only
     /// exists to derive the downloaded-so-far figure, which yt-dlp doesn't
-    /// print directly). The ETA group requires a leading digit so a literal
-    /// "ETA Unknown" — which HLS/DASH streams print for long stretches —
-    /// fails to match here, same as the already-numeric-only speed group,
-    /// rather than surfacing a useless "Unknown left" in the UI.
-    private nonisolated static func parseProgressDetail(from line: String) -> (total: String, speed: String, eta: String)? {
-        guard let match = line.firstMatch(of: /of\s+~?([\d.]+\w+)\s+at\s+([\d.]+\w+\/s)\s+ETA\s+(\d\S*)/) else { return nil }
-        return (total: String(match.1), speed: String(match.2), eta: String(match.3))
+    /// print directly).
+    ///
+    /// Each field is read on its own, because yt-dlp routinely prints some
+    /// of them as placeholders: an estimated total is padded after the "~"
+    /// ("of ~  1.07GiB"), speed can be "Unknown B/s", and ETA "Unknown" —
+    /// especially on fragmented HLS/DASH streams, where that's most of the
+    /// download. Requiring all three to parse would drop the size too.
+    /// Speed and ETA that aren't a real value come back nil rather than
+    /// surfacing "Unknown left" in the UI. Nil overall if there's no size.
+    nonisolated static func parseProgressDetail(from line: String) -> (total: String, speed: String?, eta: String?)? {
+        guard let total = line.firstMatch(of: /of\s+~?\s*(\d[\d.]*\w+)/) else { return nil }
+        let speed = line.firstMatch(of: /\bat\s+(\d[\d.]*\w+\/s)/).map { String($0.1) }
+        let eta = line.firstMatch(of: /ETA\s+(\d\S*)/).map { String($0.1) }
+        return (total: String(total.1), speed: speed, eta: eta)
     }
 
     /// Parses a yt-dlp size string like "74.32MiB" into raw bytes. Only
