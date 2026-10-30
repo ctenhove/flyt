@@ -39,9 +39,10 @@ struct DownloadingProgress: View {
                         .lineLimit(1)
                         .truncationMode(.tail)
 
-                    if phase == .merging {
-                        mergingRow
-                    } else {
+                    switch phase {
+                    case .merging:
+                        indeterminateRow(label: "Merging…")
+                    default:
                         ProgressView(value: progress)
                             .tint(.flytSky)
                             .animation(.linear(duration: 0.25), value: progress)
@@ -68,10 +69,14 @@ struct DownloadingProgress: View {
         }
     }
 
-    private var mergingRow: some View {
+    /// A spinner + label for merging, the one phase with genuinely no
+    /// incremental progress to show (a plain remux, not something ffmpeg
+    /// reports frame-by-frame progress for the way it does while cutting
+    /// a trimmed section).
+    private func indeterminateRow(label: String) -> some View {
         HStack(spacing: 8) {
             ProgressView().controlSize(.small)
-            Text("Merging…")
+            Text(label)
                 .flytStyle(.micro)
         }
     }

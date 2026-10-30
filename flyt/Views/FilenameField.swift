@@ -19,6 +19,8 @@ struct FilenameField: View {
     var isCustom: Bool
     var onReset: () -> Void
     var style: Style
+    var label = "Filename"
+    var resetTitle = "Reset to video title"
 
     enum Style { case main, card }
 
@@ -29,12 +31,12 @@ struct FilenameField: View {
     var body: some View {
         VStack(alignment: .leading, spacing: style == .main ? 6 : 7) {
             HStack(alignment: .firstTextBaseline) {
-                Text("Filename")
+                Text(label)
                     .flytStyle(.sectionLabel)
                     .textCase(.uppercase)
                 Spacer()
                 if isCustom {
-                    Button("Reset to video title", action: onReset)
+                    Button(resetTitle, action: onReset)
                         .buttonStyle(.plain)
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(.flytSkyHover)

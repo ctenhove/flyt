@@ -11,7 +11,12 @@ import SwiftUI
 /// The mockup's mark-drop animation plays on the titlebar mark instead of
 /// here — see `MainWindowChrome`.
 struct CompleteCard: View {
-    var savedFileURL: URL
+    /// Every file the download actually produced — one entry for a normal
+    /// (or merged-sections) download, several when multiple time-range
+    /// sections were requested without merging. Assumed non-empty by
+    /// every computed property below; the caller only shows this card once
+    /// there's something to report.
+    var savedFiles: [URL]
     var thumbnailURLString: String?
     var resolutionLabel: String?
     /// nil when no merge happened (audio-only, or video with no audio
@@ -23,6 +28,9 @@ struct CompleteCard: View {
     var destinationFolder: URL
     var savedSizeBytes: Int64?
     var elapsedSeconds: Double?
+    /// A non-fatal problem worth mentioning (say, subtitles that couldn't
+    /// be fetched even though the video saved fine).
+    var noticeText: String?
     var onShowInFinder: () -> Void
     var onDownloadAnother: () -> Void
 
@@ -30,6 +38,12 @@ struct CompleteCard: View {
         VStack(spacing: 16) {
             header
             card
+            if let noticeText {
+                Text(noticeText)
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(.flytMutedText)
+                    .multilineTextAlignment(.center)
+            }
             buttons
         }
     }
@@ -55,7 +69,7 @@ struct CompleteCard: View {
         HStack(spacing: 13) {
             VideoThumbnail(urlString: thumbnailURLString, width: 104, height: 59, cornerRadius: 6, durationSeconds: nil)
             VStack(alignment: .leading, spacing: 4) {
-                Text(savedFileURL.lastPathComponent)
+                Text(titleText)
                     .font(.system(size: 13.5, weight: .bold))
                     .foregroundStyle(.flytBodyText)
                     .lineLimit(1)
@@ -81,12 +95,21 @@ struct CompleteCard: View {
     }
 
     private func openFile() {
-        NSWorkspace.shared.open(savedFileURL)
+        // Several clips: open the first; the rest are one "Show in Finder" away.
+        if let first = savedFiles.first { NSWorkspace.shared.open(first) }
     }
 
     private func copyPath() {
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(savedFileURL.path, forType: .string)
+        NSPasteboard.general.setString(savedFiles.map(\.path).joined(separator: "\n"), forType: .string)
+    }
+
+    /// The saved file's name, or a "N clips saved" summary once there's
+    /// more than one — naming just one of several would read as if the
+    /// others weren't saved at all, and "Show in Finder" already reveals
+    /// every one of them together.
+    private var titleText: String {
+        savedFiles.count > 1 ? "\(savedFiles.count) clips saved" : (savedFiles.first?.lastPathComponent ?? "")
     }
 
     private var detailLine: String {

@@ -8,9 +8,10 @@
 import SwiftUI
 
 /// The expanded options card (README §3.5): filename, resolution chips,
-/// video-container / audio-track segmented controls, and the "Audio only"
-/// toggle. "Embed thumbnail & chapters" and "Download subtitles" aren't
-/// here — those need yt-dlp flags this pass doesn't wire up.
+/// video-container / audio-track segmented controls, subtitle language +
+/// embed toggle, trim-to-section(s), and the "Audio only" toggle. "Embed
+/// thumbnail & chapters" still isn't here — that needs a yt-dlp flag this
+/// pass doesn't wire up.
 struct OptionsCard: View {
     @Binding var filename: String
     var fileExtension: String
@@ -26,6 +27,20 @@ struct OptionsCard: View {
     @Binding var selectedAudioExt: String?
 
     @Binding var audioOnly: Bool
+
+    var subtitleLanguageOptions: [SubtitleSelection.LanguageOption]
+    @Binding var subtitlesEnabled: Bool
+    @Binding var selectedSubtitleLanguageCode: String?
+    @Binding var embedSubtitles: Bool
+    @Binding var subtitleFilename: String
+    var subtitleFilenameIsCustom: Bool
+    var onResetSubtitleFilename: () -> Void
+    /// nil (e.g. a live stream with no known length) hides trimming
+    /// entirely — there's no duration to bound the range picker with.
+    var duration: Double?
+    @Binding var trimEnabled: Bool
+    @Binding var timeRanges: [VideoTimeRange]
+    @Binding var mergeSections: Bool
 
     var onCollapse: () -> Void
 
@@ -68,6 +83,22 @@ struct OptionsCard: View {
                 .font(.system(size: 12.5, weight: .semibold))
                 .foregroundStyle(.flytBodyTextSecondary)
                 .pointingHandCursor()
+
+            if !subtitleLanguageOptions.isEmpty {
+                Rectangle()
+                    .fill(Color.flytDividerLight)
+                    .frame(height: 1)
+
+                subtitlesSection
+            }
+
+            if let duration {
+                Rectangle()
+                    .fill(Color.flytDividerLight)
+                    .frame(height: 1)
+
+                trimSection(duration: duration)
+            }
         }
         .padding(14)
         .background(Color.flytField)
@@ -140,6 +171,89 @@ struct OptionsCard: View {
                 isSelected: { $0.ext == selectedAudioExt },
                 onSelect: { selectedAudioExt = $0.ext }
             )
+        }
+    }
+
+    private var subtitlesSection: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Toggle("Download subtitles", isOn: $subtitlesEnabled)
+                .toggleStyle(.switch)
+                .tint(.flytSky)
+                .font(.system(size: 12.5, weight: .semibold))
+                .foregroundStyle(.flytBodyTextSecondary)
+
+            if subtitlesEnabled {
+                HStack(spacing: 10) {
+                    subtitleLanguagePicker
+                    // Embedding mixes subtitles into the video file itself,
+                    // so it's meaningless once "Audio only" drops the video
+                    // track entirely.
+                    if !audioOnly {
+                        Toggle("Embed", isOn: $embedSubtitles)
+                            .toggleStyle(.switch)
+                            .tint(.flytSky)
+                            .font(.system(size: 11.5, weight: .semibold))
+                            .foregroundStyle(.flytBodyTextSecondary)
+                    }
+                }
+                // Only a sidecar file has a name of its own to choose.
+                if audioOnly || !embedSubtitles, let code = selectedSubtitleLanguageCode {
+                    FilenameField(
+                        filename: $subtitleFilename,
+                        fileExtension: "\(code).srt",
+                        isCustom: subtitleFilenameIsCustom,
+                        onReset: onResetSubtitleFilename,
+                        style: .card,
+                        label: "Subtitle filename",
+                        resetTitle: "Reset to video name"
+                    )
+                }
+            }
+        }
+    }
+
+    private var subtitleLanguagePicker: some View {
+        Menu {
+            ForEach(subtitleLanguageOptions) { option in
+                Button(option.label) { selectedSubtitleLanguageCode = option.code }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Text(selectedSubtitleLanguageLabel)
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(.flytBodyTextSecondary)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.flytMutedText)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Color.flytSurface, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .strokeBorder(Color.flytBorder)
+            )
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+    }
+
+    private var selectedSubtitleLanguageLabel: String {
+        subtitleLanguageOptions.first { $0.code == selectedSubtitleLanguageCode }?.label ?? "Select language"
+    }
+
+    private func trimSection(duration: Double) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Toggle("Trim to section(s)", isOn: $trimEnabled)
+                .toggleStyle(.switch)
+                .tint(.flytSky)
+                .font(.system(size: 12.5, weight: .semibold))
+                .foregroundStyle(.flytBodyTextSecondary)
+
+            if trimEnabled {
+                TimeRangeEditor(duration: duration, ranges: $timeRanges, mergeSections: $mergeSections)
+            }
         }
     }
 }
