@@ -82,4 +82,93 @@ struct FlytTests {
         #expect(DependencyManager.parseSHA256(forFilename: "yt-dlp_macos", fromSumsFileContents: "") == nil)
     }
 
+    // MARK: FlytFormat.parseDuration
+
+    @Test func parsesMinutesAndSeconds() {
+        #expect(FlytFormat.parseDuration("1:30") == 90)
+    }
+
+    @Test func parsesHoursMinutesAndSeconds() {
+        #expect(FlytFormat.parseDuration("1:02:03") == 3723)
+    }
+
+    @Test func toleratesOverflowingSecondsPart() {
+        #expect(FlytFormat.parseDuration("1:90") == 150)
+    }
+
+    @Test func rejectsNonNumericInput() {
+        #expect(FlytFormat.parseDuration("abc") == nil)
+    }
+
+    @Test func rejectsWrongPartCount() {
+        #expect(FlytFormat.parseDuration("30") == nil)
+        #expect(FlytFormat.parseDuration("1:02:03:04") == nil)
+    }
+
+    @Test func rejectsNegativeParts() {
+        #expect(FlytFormat.parseDuration("-1:30") == nil)
+    }
+
+    @Test func durationAndParseDurationRoundTrip() {
+        let text = FlytFormat.duration(3723)
+        #expect(FlytFormat.parseDuration(text) == 3723)
+    }
+
+    // MARK: VideoTimeRange.clamp
+
+    @Test func clampLeavesAlreadyValidRangeUnchanged() {
+        var range = VideoTimeRange(start: 10, end: 20)
+        range.clamp(to: 100)
+        #expect(range.start == 10)
+        #expect(range.end == 20)
+    }
+
+    @Test func clampPullsBoundsIntoDuration() {
+        var range = VideoTimeRange(start: -5, end: 150)
+        range.clamp(to: 100)
+        #expect(range.start == 0)
+        #expect(range.end == 100)
+    }
+
+    @Test func clampEnforcesMinimumLengthWhenEndBeforeStart() {
+        var range = VideoTimeRange(start: 50, end: 20)
+        range.clamp(to: 100)
+        #expect(range.end - range.start >= VideoTimeRange.minimumLength)
+        #expect(range.start == 50)
+    }
+
+    @Test func clampNearDurationEndKeepsRangeInBounds() {
+        var range = VideoTimeRange(start: 99.8, end: 99.9)
+        range.clamp(to: 100)
+        #expect(range.start >= 0)
+        #expect(range.end <= 100)
+        #expect(range.end - range.start >= VideoTimeRange.minimumLength)
+    }
+
+    // MARK: [VideoTimeRange].hasOverlaps
+
+    @Test func adjacentRangesDoNotOverlap() {
+        let ranges = [VideoTimeRange(start: 0, end: 10), VideoTimeRange(start: 10, end: 20)]
+        #expect(!ranges.hasOverlaps)
+    }
+
+    @Test func overlappingRangesAreDetected() {
+        let ranges = [VideoTimeRange(start: 0, end: 10), VideoTimeRange(start: 5, end: 15)]
+        #expect(ranges.hasOverlaps)
+    }
+
+    @Test func fullyContainedRangeIsDetectedAsOverlap() {
+        let ranges = [VideoTimeRange(start: 0, end: 20), VideoTimeRange(start: 5, end: 10)]
+        #expect(ranges.hasOverlaps)
+    }
+
+    @Test func nonOverlappingOutOfOrderRangesAreNotFlagged() {
+        let ranges = [VideoTimeRange(start: 20, end: 30), VideoTimeRange(start: 0, end: 10)]
+        #expect(!ranges.hasOverlaps)
+    }
+
+    @Test func singleRangeNeverOverlaps() {
+        #expect(![VideoTimeRange(start: 0, end: 10)].hasOverlaps)
+    }
+
 }
