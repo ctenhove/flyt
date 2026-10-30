@@ -23,6 +23,9 @@ struct OptionsCard: View {
 
     @Binding var selectedContainer: OutputContainer
 
+    var audioLanguageOptions: [FormatSelection.AudioLanguageOption]
+    @Binding var selectedAudioLanguageID: String?
+
     var audioOptions: [FormatSelection.AudioOption]
     @Binding var selectedAudioExt: String?
 
@@ -71,6 +74,12 @@ struct OptionsCard: View {
                 if audioOptions.count > 1 {
                     audioSection
                 }
+            }
+
+            // Only worth showing when the video really has several audio
+            // languages (dubs); a single track has nothing to choose.
+            if audioLanguageOptions.count > 1 {
+                audioLanguageSection
             }
 
             Rectangle()
@@ -170,6 +179,39 @@ struct OptionsCard: View {
                 isSelected: { $0.ext == selectedAudioExt },
                 onSelect: { selectedAudioExt = $0.ext }
             )
+        }
+    }
+
+    private var audioLanguageSection: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text("Audio language")
+                .font(.system(size: 11.5, weight: .semibold))
+                .foregroundStyle(.flytBodyTextSecondary)
+            Menu {
+                ForEach(audioLanguageOptions) { option in
+                    Button(option.label) { selectedAudioLanguageID = option.id }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Text(audioLanguageOptions.first { $0.id == selectedAudioLanguageID }?.label ?? "Select language")
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundStyle(.flytBodyTextSecondary)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.flytMutedText)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(Color.flytSurface, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .strokeBorder(Color.flytBorder)
+                )
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .pointingHandCursor()
         }
     }
 

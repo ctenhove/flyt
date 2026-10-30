@@ -51,7 +51,13 @@ struct DownloadItemCard: View {
             settings.videoFormats = Self.sortedFormats(info.formats) { $0.hasVideo }
             settings.audioFormats = Self.sortedFormats(info.formats) { $0.isAudioOnly }
             settings.resolutionOptions = FormatSelection.resolutionOptions(in: settings.videoFormats)
-            settings.audioOptions = FormatSelection.audioOptions(in: settings.audioFormats)
+            settings.audioLanguageOptions = FormatSelection.audioLanguageOptions(in: settings.audioFormats)
+            if !settings.audioLanguageOptions.contains(where: { $0.id == settings.selectedAudioLanguageID }) {
+                settings.selectedAudioLanguageID = FormatSelection.defaultAudioLanguageID(in: settings.audioLanguageOptions)
+            }
+            settings.audioOptions = FormatSelection.audioOptions(
+                in: FormatSelection.audioFormats(settings.audioFormats, inLanguage: settings.selectedAudioLanguageID)
+            )
             settings.subtitleLanguageOptions = SubtitleSelection.languageOptions(
                 subtitles: info.subtitles,
                 automaticCaptions: info.automaticCaptions
@@ -60,7 +66,7 @@ struct DownloadItemCard: View {
                 settings.selectedVideoFormatID = preferredResolutionFormatID() ?? settings.videoFormats.first?.id
             }
             if settings.selectedAudioFormatID == nil {
-                settings.selectedAudioFormatID = settings.audioFormats.first?.id
+                settings.selectedAudioFormatID = settings.audioOptions.first?.format.id ?? settings.audioFormats.first?.id
             }
             // A code left over from a previous fetch may no longer be on
             // offer; an unmatched code would silently download no subtitles.
@@ -169,6 +175,8 @@ struct DownloadItemCard: View {
                         resolutionOptions: settings.resolutionOptions,
                         selectedHeight: heightBinding,
                         selectedContainer: containerBinding,
+                        audioLanguageOptions: settings.audioLanguageOptions,
+                        selectedAudioLanguageID: audioLanguageBinding,
                         audioOptions: settings.audioOptions,
                         selectedAudioExt: audioExtBinding,
                         audioOnly: $settings.audioOnly,
@@ -386,6 +394,25 @@ struct DownloadItemCard: View {
             set: {
                 settings.selectedOutputContainer = $0
                 Preferences.outputContainer = $0
+            }
+        )
+    }
+
+    /// Switching audio language re-derives the audio extension choices from
+    /// that language's formats, keeping the current extension if the new
+    /// language offers it and otherwise taking its best format.
+    private var audioLanguageBinding: Binding<String?> {
+        Binding(
+            get: { settings.selectedAudioLanguageID },
+            set: { newID in
+                guard let newID, newID != settings.selectedAudioLanguageID else { return }
+                let currentExt = selectedAudioFormat?.ext
+                settings.selectedAudioLanguageID = newID
+                settings.audioOptions = FormatSelection.audioOptions(
+                    in: FormatSelection.audioFormats(settings.audioFormats, inLanguage: newID)
+                )
+                let match = settings.audioOptions.first { $0.ext == currentExt } ?? settings.audioOptions.first
+                settings.selectedAudioFormatID = match?.format.id
             }
         )
     }
