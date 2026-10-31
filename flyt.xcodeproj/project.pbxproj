@@ -8,6 +8,8 @@
 
 /* Begin PBXBuildFile section */
 		E4731B962FFDC517000517F7 /* yt-dlp_macos in Resources */ = {isa = PBXBuildFile; fileRef = E4731B952FFDC517000517F7 /* yt-dlp_macos */; };
+		E4731BA22FFDC700000517F7 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = E4731BA12FFDC700000517F7 /* Sparkle */; };
+		E4731BA32FFDC700000517F7 /* Sparkle in Embed Frameworks */ = {isa = PBXBuildFile; productRef = E4731BA12FFDC700000517F7 /* Sparkle */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -26,6 +28,20 @@
 			remoteInfo = flyt;
 		};
 /* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		E4731BA42FFDC700000517F7 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				E4731BA32FFDC700000517F7 /* Sparkle in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		E4731B6C2FFDC4B5000517F7 /* flyt.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = flyt.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -56,6 +72,7 @@
 		E4731B692FFDC4B5000517F7 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
+				E4731BA22FFDC700000517F7 /* Sparkle in Frameworks */,
 			);
 		};
 		E4731B762FFDC4B7000517F7 /* Frameworks */ = {
@@ -110,6 +127,7 @@
 				E4731B682FFDC4B5000517F7 /* Sources */,
 				E4731B692FFDC4B5000517F7 /* Frameworks */,
 				E4731B6A2FFDC4B5000517F7 /* Resources */,
+				E4731BA42FFDC700000517F7 /* Embed Frameworks */,
 				E4731B972FFDC540000517F7 /* ShellScript */,
 			);
 			buildRules = (
@@ -118,6 +136,9 @@
 				E4731B6E2FFDC4B5000517F7 /* flyt */,
 			);
 			name = flyt;
+			packageProductDependencies = (
+				E4731BA12FFDC700000517F7 /* Sparkle */,
+			);
 			productName = flyt;
 			productReference = E4731B6C2FFDC4B5000517F7 /* flyt.app */;
 			productType = "com.apple.product-type.application";
@@ -196,6 +217,9 @@
 			);
 			mainGroup = E4731B632FFDC4B5000517F7;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				E4731BA02FFDC700000517F7 /* XCRemoteSwiftPackageReference "Sparkle" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = E4731B6D2FFDC4B5000517F7 /* Products */;
 			projectDirPath = "";
@@ -406,6 +430,8 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = flyt;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_SUFeedURL = "https://ctenhove.github.io/flyt/appcast.xml";
+				INFOPLIST_KEY_SUPublicEDKey = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -438,6 +464,8 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = flyt;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_SUFeedURL = "https://ctenhove.github.io/flyt/appcast.xml";
+				INFOPLIST_KEY_SUPublicEDKey = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -571,6 +599,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		E4731BA02FFDC700000517F7 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.6.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		E4731BA12FFDC700000517F7 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = E4731BA02FFDC700000517F7 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = E4731B642FFDC4B5000517F7 /* Project object */;
 	validationLevel = 1;

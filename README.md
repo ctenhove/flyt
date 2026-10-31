@@ -27,6 +27,8 @@ On first launch, flyt also downloads and verifies a small `ffmpeg` binary it nee
 
 flyt keeps its bundled `yt-dlp` up to date automatically (checked once a day in the background), so it keeps working as YouTube changes without you needing to update the app.
 
+flyt also checks for new versions of itself (**flyt → Check for Updates…**) and offers to install them. Maintainers: see [RELEASING.md](RELEASING.md).
+
 ## Requirements
 
 - macOS 14.6+
