@@ -23,6 +23,9 @@ struct OptionsCard: View {
 
     @Binding var selectedContainer: OutputContainer
 
+    var audioLanguageOptions: [FormatSelection.AudioLanguageOption]
+    @Binding var selectedAudioLanguageID: String?
+
     var audioOptions: [FormatSelection.AudioOption]
     @Binding var selectedAudioExt: String?
 
@@ -71,6 +74,12 @@ struct OptionsCard: View {
                 if audioOptions.count > 1 {
                     audioSection
                 }
+            }
+
+            // Only worth showing when the video really has several audio
+            // languages (dubs); a single track has nothing to choose.
+            if audioLanguageOptions.count > 1 {
+                audioLanguageSection
             }
 
             Rectangle()
@@ -173,6 +182,20 @@ struct OptionsCard: View {
         }
     }
 
+    private var audioLanguageSection: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text("Audio language")
+                .font(.system(size: 11.5, weight: .semibold))
+                .foregroundStyle(.flytBodyTextSecondary)
+            LanguageMenu(
+                options: audioLanguageOptions,
+                label: \.label,
+                selectedLabel: audioLanguageOptions.first { $0.id == selectedAudioLanguageID }?.label ?? "Select language",
+                onSelect: { selectedAudioLanguageID = $0.id }
+            )
+        }
+    }
+
     private var subtitlesSection: some View {
         VStack(alignment: .leading, spacing: 7) {
             Toggle("Download subtitles", isOn: $subtitlesEnabled)
@@ -210,30 +233,12 @@ struct OptionsCard: View {
     }
 
     private var subtitleLanguagePicker: some View {
-        Menu {
-            ForEach(subtitleLanguageOptions) { option in
-                Button(option.label) { selectedSubtitleLanguageCode = option.code }
-            }
-        } label: {
-            HStack(spacing: 6) {
-                Text(selectedSubtitleLanguageLabel)
-                    .font(.system(size: 12.5, weight: .semibold))
-                    .foregroundStyle(.flytBodyTextSecondary)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(.flytMutedText)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(Color.flytSurface, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .strokeBorder(Color.flytBorder)
-            )
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
+        LanguageMenu(
+            options: subtitleLanguageOptions,
+            label: \.label,
+            selectedLabel: selectedSubtitleLanguageLabel,
+            onSelect: { selectedSubtitleLanguageCode = $0.code }
+        )
     }
 
     private var selectedSubtitleLanguageLabel: String {
@@ -251,6 +256,43 @@ struct OptionsCard: View {
                 TimeRangeEditor(duration: duration, ranges: $timeRanges, mergeSections: $mergeSections)
             }
         }
+    }
+}
+
+/// The pop-up menu both language pickers (audio and subtitles) use, so the
+/// two stay looking and behaving alike.
+private struct LanguageMenu<Option: Identifiable>: View {
+    let options: [Option]
+    let label: (Option) -> String
+    let selectedLabel: String
+    let onSelect: (Option) -> Void
+
+    var body: some View {
+        Menu {
+            ForEach(options) { option in
+                Button(label(option)) { onSelect(option) }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Text(selectedLabel)
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(.flytBodyTextSecondary)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.flytMutedText)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Color.flytSurface, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .strokeBorder(Color.flytBorder)
+            )
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .pointingHandCursor()
     }
 }
 

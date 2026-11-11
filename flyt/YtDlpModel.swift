@@ -138,6 +138,16 @@ struct VideoFormat: Codable, Identifiable, Hashable {
     /// "m3u8_native" (HLS). Used only to break quality ties in favor of a
     /// format whose progress reporting is reliable — see `hasReliableProgress`.
     let formatProtocol: String?
+    /// The language of this format's audio, when yt-dlp knows it — e.g. "en",
+    /// "es-US", or "en-desc" for a descriptive-audio track. A video with
+    /// dubbed audio lists one audio-only format per language.
+    let language: String?
+    /// yt-dlp's ranking of this format's language against the video's other
+    /// languages; the original audio track is the one ranked highest — see
+    /// `FormatSelection.originalAudioLanguageIDs`.
+    let languagePreference: Int?
+    /// yt-dlp's free-text description, e.g. "English (US) original (default), medium".
+    let formatNote: String?
 
     var id: String { formatId }
 
@@ -154,6 +164,9 @@ struct VideoFormat: Codable, Identifiable, Hashable {
         case filesize
         case filesizeApprox = "filesize_approx"
         case formatProtocol = "protocol"
+        case language
+        case languagePreference = "language_preference"
+        case formatNote = "format_note"
     }
 
     /// True if this format carries a video track (yt-dlp uses vcodec "none" for audio-only formats).

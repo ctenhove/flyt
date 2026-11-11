@@ -61,6 +61,119 @@ enum FormatSelection {
             .sorted { $0.format.qualityRank > $1.format.qualityRank }
     }
 
+    /// One audio language a video offers. Videos with dubbed audio list a
+    /// separate audio-only format per language; `id` is the language code,
+    /// or "und" for formats yt-dlp couldn't label.
+    struct AudioLanguageOption: Identifiable, Hashable {
+        let id: String
+        /// True for the video's own (original) audio, as opposed to a dub.
+        let isOriginal: Bool
+
+        /// A descriptive-audio track: extra narration for blind users, which
+        /// should never be what a video silently defaults to.
+        var isDescriptive: Bool { id.lowercased().hasSuffix(LanguageCode.descriptiveSuffix) }
+
+        var label: String {
+            guard id != Self.unknownID else { return "Unknown" }
+            let name = LanguageCode.displayName(id)
+            var label = isDescriptive ? "\(name) (audio description)" : name
+            if isOriginal { label += " (original)" }
+            return label
+        }
+
+        static let unknownID = "und"
+    }
+
+    /// The video's audio-only formats grouped by language code, with
+    /// unlabelled ones under "und". A site can label only some of a single
+    /// track's formats; when just one language is named, the unlabelled
+    /// formats are counted as that language rather than as a second,
+    /// "Unknown" one — which would be a choice between a track and itself,
+    /// and would hide the unlabelled formats from the default.
+    static func audioFormatsByLanguage(_ formats: [VideoFormat]) -> [String: [VideoFormat]] {
+        let unknownID = AudioLanguageOption.unknownID
+        var groups = Dictionary(grouping: formats.filter { $0.isAudioOnly }) { format in
+            format.language.flatMap { $0.isEmpty ? nil : $0 } ?? unknownID
+        }
+        if groups.count == 2, groups[unknownID] != nil, let named = groups.keys.first(where: { $0 != unknownID }) {
+            // Refiltered rather than appended, to keep the caller's order.
+            groups = [named: formats.filter { $0.isAudioOnly }]
+        }
+        return groups
+    }
+
+    /// The language(s) holding the video's own audio rather than a dub.
+    /// yt-dlp ranks languages with `language_preference`, and YouTube can
+    /// rank both the original track and a dub it would play by default for
+    /// this viewer above the rest — so only the top rank counts, not any
+    /// positive one. Without a ranking, falls back to what `format_note`
+    /// says ("English (US) original (default), medium"), "original" first.
+    static func originalAudioLanguageIDs(in groups: [String: [VideoFormat]]) -> Set<String> {
+        func languages(where matches: (VideoFormat) -> Bool) -> Set<String> {
+            Set(groups.filter { $0.value.contains(where: matches) }.keys)
+        }
+        let topPreference = groups.values.joined().compactMap(\.languagePreference).max() ?? 0
+        if topPreference > 0 {
+            return languages { $0.languagePreference == topPreference }
+        }
+        let original = languages { $0.formatNote?.lowercased().contains("original") == true }
+        if !original.isEmpty { return original }
+        return languages { $0.formatNote?.lowercased().contains("(default)") == true }
+    }
+
+    /// The audio languages offered, original first, then by name. Fewer than
+    /// two means there's nothing to choose between — callers should hide the
+    /// picker in that case.
+    static func audioLanguageOptions(in formats: [VideoFormat]) -> [AudioLanguageOption] {
+        let groups = audioFormatsByLanguage(formats)
+        let originalIDs = originalAudioLanguageIDs(in: groups)
+        return groups.keys
+            .map { AudioLanguageOption(id: $0, isOriginal: originalIDs.contains($0)) }
+            .map { (option: $0, label: $0.label) }
+            .sorted {
+                if $0.option.isOriginal != $1.option.isOriginal { return $0.option.isOriginal }
+                return $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending
+            }
+            .map(\.option)
+    }
+
+    /// The audio language to preselect: the video's own original track, so a
+    /// download sounds like the video does by default and never silently
+    /// comes out dubbed; failing that the user's language, then English,
+    /// then whatever comes first. Descriptive-audio tracks are skipped
+    /// unless they're all there is.
+    static func defaultAudioLanguageID(
+        in options: [AudioLanguageOption],
+        preferredLanguages: [String] = Locale.preferredLanguages
+    ) -> String? {
+        let candidates = options.filter { !$0.isDescriptive }
+        let pool = candidates.isEmpty ? options : candidates
+        if let original = pool.first(where: \.isOriginal) { return original.id }
+        for preferred in preferredLanguages + ["en"] {
+            let best = pool
+                .compactMap { option in
+                    LanguageCode.matchTier(code: option.id, preferred: preferred).map { (option, $0) }
+                }
+                .min { $0.1 < $1.1 }
+            if let best { return best.0.id }
+        }
+        return pool.first?.id
+    }
+
+    /// `formats` narrowed to the audio-only formats in `languageID` (see
+    /// `audioFormatsByLanguage`); all of the audio-only formats when no
+    /// language is chosen.
+    static func audioFormats(_ formats: [VideoFormat], inLanguage languageID: String?) -> [VideoFormat] {
+        guard let languageID else { return formats.filter { $0.isAudioOnly } }
+        return audioFormatsByLanguage(formats)[languageID] ?? []
+    }
+
+    /// The audio extension choices within one language: `audioOptions(in:)`
+    /// over `audioFormats(_:inLanguage:)`.
+    static func audioOptions(in formats: [VideoFormat], language languageID: String?) -> [AudioOption] {
+        audioOptions(in: audioFormats(formats, inLanguage: languageID))
+    }
+
     /// Orders two video formats by quality first; when a resolution ladder
     /// has several formats tied on `qualityRank` (a common case: YouTube
     /// often offers the same resolution in H.264, VP9, and AV1), prefers

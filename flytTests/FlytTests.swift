@@ -489,8 +489,177 @@ struct FlytTests {
             tbr: nil,
             filesize: nil,
             filesizeApprox: nil,
-            formatProtocol: formatProtocol
+            formatProtocol: formatProtocol,
+            language: nil,
+            languagePreference: nil,
+            formatNote: nil
         )
+    }
+
+    private static func audioFormat(
+        id: String,
+        ext: String = "webm",
+        abr: Double = 128,
+        language: String? = nil,
+        languagePreference: Int? = nil,
+        formatNote: String? = nil
+    ) -> VideoFormat {
+        VideoFormat(
+            formatId: id,
+            ext: ext,
+            resolution: nil,
+            height: nil,
+            fps: nil,
+            vcodec: "none",
+            acodec: "opus",
+            abr: abr,
+            tbr: nil,
+            filesize: nil,
+            filesizeApprox: nil,
+            formatProtocol: nil,
+            language: language,
+            languagePreference: languagePreference,
+            formatNote: formatNote
+        )
+    }
+
+    // MARK: Audio language
+
+    @Test func decodesAudioLanguageFieldsFromYtDlpJSON() throws {
+        let json = """
+        {"format_id": "251-1", "ext": "webm", "vcodec": "none", "acodec": "opus", "abr": 130.0,
+         "language": "es-US", "language_preference": -1, "format_note": "Spanish (United States), medium"}
+        """
+        let format = try JSONDecoder().decode(VideoFormat.self, from: Data(json.utf8))
+        #expect(format.language == "es-US")
+        #expect(format.languagePreference == -1)
+        #expect(format.formatNote == "Spanish (United States), medium")
+    }
+
+    @Test func anOriginalNoteMarksTheOriginalTrackWhenNothingIsRanked() {
+        let options = FormatSelection.audioLanguageOptions(in: [
+            Self.audioFormat(id: "a", language: "en", formatNote: "English (US) original (default), medium"),
+            Self.audioFormat(id: "b", language: "fr", languagePreference: -1, formatNote: "French, medium"),
+        ])
+        #expect(options.filter(\.isOriginal).map(\.id) == ["en"])
+    }
+
+    @Test func aDubRankedAsTheViewersDefaultIsNotTheOriginal() {
+        // YouTube can rank a dub it would play by default for this viewer
+        // above the other dubs, but still below the original.
+        let options = FormatSelection.audioLanguageOptions(in: [
+            Self.audioFormat(id: "a", language: "en", languagePreference: 5, formatNote: "English (default), medium"),
+            Self.audioFormat(id: "b", language: "fr", languagePreference: 10, formatNote: "French original, medium"),
+            Self.audioFormat(id: "c", language: "de", languagePreference: -1),
+        ])
+        #expect(options.filter(\.isOriginal).map(\.id) == ["fr"])
+        #expect(FormatSelection.defaultAudioLanguageID(in: options, preferredLanguages: ["en-US"]) == "fr")
+    }
+
+    @Test func regionalAudioVariantsGetDifferentLabels() {
+        let options = FormatSelection.audioLanguageOptions(in: [
+            Self.audioFormat(id: "a", language: "es-US"),
+            Self.audioFormat(id: "b", language: "es-419"),
+        ])
+        #expect(Set(options.map(\.label)).count == 2)
+    }
+
+    @Test func unlabelledFormatsBelongToTheOnlyNamedLanguage() {
+        let formats = [
+            Self.audioFormat(id: "labelled", abr: 100, language: "en"),
+            Self.audioFormat(id: "unlabelled", abr: 160),
+        ]
+        #expect(FormatSelection.audioLanguageOptions(in: formats).map(\.id) == ["en"])
+        #expect(FormatSelection.audioOptions(in: formats, language: "en").first?.format.id == "unlabelled")
+    }
+
+    @Test func unlabelledFormatsStaySeparateBesideSeveralNamedLanguages() {
+        let formats = [
+            Self.audioFormat(id: "a", language: "en"),
+            Self.audioFormat(id: "b", language: "fr"),
+            Self.audioFormat(id: "c"),
+        ]
+        #expect(Set(FormatSelection.audioLanguageOptions(in: formats).map(\.id)) == ["en", "fr", "und"])
+        #expect(FormatSelection.audioFormats(formats, inLanguage: "en").map(\.id) == ["a"])
+    }
+
+    @Test func aSingleAudioLanguageOffersNoChoice() {
+        let options = FormatSelection.audioLanguageOptions(in: [
+            Self.audioFormat(id: "a", language: "en"),
+            Self.audioFormat(id: "b", ext: "m4a", language: "en"),
+        ])
+        #expect(options.count == 1)
+    }
+
+    @Test func originalAudioLanguageIsListedFirstAndLabelled() {
+        let options = FormatSelection.audioLanguageOptions(in: [
+            Self.audioFormat(id: "a", language: "de", languagePreference: -1),
+            Self.audioFormat(id: "b", language: "fr", languagePreference: 10),
+            Self.audioFormat(id: "c", language: "ar", languagePreference: -1),
+        ])
+        #expect(options.map(\.id) == ["fr", "ar", "de"])
+        #expect(options.first?.isOriginal == true)
+        #expect(options.first?.label.hasSuffix("(original)") == true)
+    }
+
+    @Test func defaultAudioLanguageIsTheOriginalNotTheUsersLanguage() {
+        let options = FormatSelection.audioLanguageOptions(in: [
+            Self.audioFormat(id: "a", language: "hi", languagePreference: 10),
+            Self.audioFormat(id: "b", language: "en", languagePreference: -1),
+        ])
+        #expect(FormatSelection.defaultAudioLanguageID(in: options, preferredLanguages: ["en-US"]) == "hi")
+    }
+
+    @Test func withNoMarkedOriginalTheUsersLanguageThenEnglishWins() {
+        let options = FormatSelection.audioLanguageOptions(in: [
+            Self.audioFormat(id: "a", language: "de"),
+            Self.audioFormat(id: "b", language: "fr"),
+            Self.audioFormat(id: "c", language: "en-US"),
+        ])
+        #expect(FormatSelection.defaultAudioLanguageID(in: options, preferredLanguages: ["fr-CA"]) == "fr")
+        #expect(FormatSelection.defaultAudioLanguageID(in: options, preferredLanguages: ["ja-JP"]) == "en-US")
+    }
+
+    @Test func descriptiveAudioIsNeverTheDefaultWhenAnythingElseExists() {
+        let options = FormatSelection.audioLanguageOptions(in: [
+            Self.audioFormat(id: "a", language: "en-desc", languagePreference: 10),
+            Self.audioFormat(id: "b", language: "en", languagePreference: -1),
+        ])
+        #expect(FormatSelection.defaultAudioLanguageID(in: options, preferredLanguages: ["en"]) == "en")
+        let onlyDescriptive = FormatSelection.audioLanguageOptions(in: [Self.audioFormat(id: "a", language: "en-desc")])
+        #expect(FormatSelection.defaultAudioLanguageID(in: onlyDescriptive, preferredLanguages: ["en"]) == "en-desc")
+    }
+
+    @Test func descriptiveAudioIsLabelledAsSuch() {
+        let option = FormatSelection.AudioLanguageOption(id: "en-desc", isOriginal: false)
+        #expect(option.label.contains("audio description"))
+    }
+
+    @Test func formatsWithoutALanguageFormOneUnknownGroup() {
+        let formats = [Self.audioFormat(id: "a"), Self.audioFormat(id: "b", ext: "m4a")]
+        let options = FormatSelection.audioLanguageOptions(in: formats)
+        #expect(options.map(\.id) == ["und"])
+        #expect(FormatSelection.audioFormats(formats, inLanguage: "und").count == 2)
+    }
+
+    @Test func audioChoicesAreScopedToTheChosenLanguageAndStillBestFirst() {
+        let formats = [
+            Self.audioFormat(id: "en-low", ext: "webm", abr: 50, language: "en"),
+            Self.audioFormat(id: "en-high", ext: "webm", abr: 130, language: "en"),
+            Self.audioFormat(id: "en-m4a", ext: "m4a", abr: 120, language: "en"),
+            Self.audioFormat(id: "es-high", ext: "webm", abr: 200, language: "es"),
+        ]
+        let english = FormatSelection.audioOptions(in: formats, language: "en")
+        #expect(english.map(\.format.id) == ["en-high", "en-m4a"])
+        let spanish = FormatSelection.audioOptions(in: formats, language: "es")
+        #expect(spanish.map(\.format.id) == ["es-high"])
+    }
+
+    @Test func languageMatchingPrefersExactThenGeneralThenSameBase() {
+        #expect(LanguageCode.matchTier(code: "en-GB", preferred: "en-GB") == 0)
+        #expect(LanguageCode.matchTier(code: "en", preferred: "en-GB") == 1)
+        #expect(LanguageCode.matchTier(code: "en-US", preferred: "en-GB") == 2)
+        #expect(LanguageCode.matchTier(code: "fr", preferred: "en-GB") == nil)
     }
 
     // MARK: FlytFormat.parseDuration

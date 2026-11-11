@@ -46,6 +46,10 @@ final class DownloadItemSettings {
     var audioFormats: [VideoFormat] = []
     var resolutionOptions: [FormatSelection.ResolutionOption] = []
     var audioOptions: [FormatSelection.AudioOption] = []
+    var audioLanguageOptions: [FormatSelection.AudioLanguageOption] = []
+    /// `AudioLanguageOption.id` of the chosen audio language; nil until a
+    /// video's formats have loaded.
+    var selectedAudioLanguageID: String?
     var subtitleLanguageOptions: [SubtitleSelection.LanguageOption] = []
 
     var showingComplete = false
