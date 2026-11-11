@@ -187,31 +187,12 @@ struct OptionsCard: View {
             Text("Audio language")
                 .font(.system(size: 11.5, weight: .semibold))
                 .foregroundStyle(.flytBodyTextSecondary)
-            Menu {
-                ForEach(audioLanguageOptions) { option in
-                    Button(option.label) { selectedAudioLanguageID = option.id }
-                }
-            } label: {
-                HStack(spacing: 6) {
-                    Text(audioLanguageOptions.first { $0.id == selectedAudioLanguageID }?.label ?? "Select language")
-                        .font(.system(size: 12.5, weight: .semibold))
-                        .foregroundStyle(.flytBodyTextSecondary)
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(.flytMutedText)
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(Color.flytSurface, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .strokeBorder(Color.flytBorder)
-                )
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .pointingHandCursor()
+            LanguageMenu(
+                options: audioLanguageOptions,
+                label: \.label,
+                selectedLabel: audioLanguageOptions.first { $0.id == selectedAudioLanguageID }?.label ?? "Select language",
+                onSelect: { selectedAudioLanguageID = $0.id }
+            )
         }
     }
 
@@ -252,30 +233,12 @@ struct OptionsCard: View {
     }
 
     private var subtitleLanguagePicker: some View {
-        Menu {
-            ForEach(subtitleLanguageOptions) { option in
-                Button(option.label) { selectedSubtitleLanguageCode = option.code }
-            }
-        } label: {
-            HStack(spacing: 6) {
-                Text(selectedSubtitleLanguageLabel)
-                    .font(.system(size: 12.5, weight: .semibold))
-                    .foregroundStyle(.flytBodyTextSecondary)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(.flytMutedText)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(Color.flytSurface, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .strokeBorder(Color.flytBorder)
-            )
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
+        LanguageMenu(
+            options: subtitleLanguageOptions,
+            label: \.label,
+            selectedLabel: selectedSubtitleLanguageLabel,
+            onSelect: { selectedSubtitleLanguageCode = $0.code }
+        )
     }
 
     private var selectedSubtitleLanguageLabel: String {
@@ -293,6 +256,43 @@ struct OptionsCard: View {
                 TimeRangeEditor(duration: duration, ranges: $timeRanges, mergeSections: $mergeSections)
             }
         }
+    }
+}
+
+/// The pop-up menu both language pickers (audio and subtitles) use, so the
+/// two stay looking and behaving alike.
+private struct LanguageMenu<Option: Identifiable>: View {
+    let options: [Option]
+    let label: (Option) -> String
+    let selectedLabel: String
+    let onSelect: (Option) -> Void
+
+    var body: some View {
+        Menu {
+            ForEach(options) { option in
+                Button(label(option)) { onSelect(option) }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Text(selectedLabel)
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(.flytBodyTextSecondary)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.flytMutedText)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Color.flytSurface, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .strokeBorder(Color.flytBorder)
+            )
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .pointingHandCursor()
     }
 }
 

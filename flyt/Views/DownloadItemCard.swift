@@ -56,7 +56,8 @@ struct DownloadItemCard: View {
                 settings.selectedAudioLanguageID = FormatSelection.defaultAudioLanguageID(in: settings.audioLanguageOptions)
             }
             settings.audioOptions = FormatSelection.audioOptions(
-                in: FormatSelection.audioFormats(settings.audioFormats, inLanguage: settings.selectedAudioLanguageID)
+                in: settings.audioFormats,
+                language: settings.selectedAudioLanguageID
             )
             settings.subtitleLanguageOptions = SubtitleSelection.languageOptions(
                 subtitles: info.subtitles,
@@ -65,7 +66,11 @@ struct DownloadItemCard: View {
             if settings.selectedVideoFormatID == nil {
                 settings.selectedVideoFormatID = preferredResolutionFormatID() ?? settings.videoFormats.first?.id
             }
-            if settings.selectedAudioFormatID == nil {
+            // Also replaces a format left over from a previous fetch that is
+            // gone now, or belongs to a language other than the one selected
+            // above — the picker would show one language and download another.
+            let languageFormats = FormatSelection.audioFormats(settings.audioFormats, inLanguage: settings.selectedAudioLanguageID)
+            if !languageFormats.contains(where: { $0.id == settings.selectedAudioFormatID }) {
                 settings.selectedAudioFormatID = settings.audioOptions.first?.format.id ?? settings.audioFormats.first?.id
             }
             // A code left over from a previous fetch may no longer be on
@@ -278,10 +283,10 @@ struct DownloadItemCard: View {
     /// (say, the same stream over plain HTTP and HLS), prefers reliable
     /// progress reporting — see `VideoFormat.hasReliableProgress` — so the
     /// download UI doesn't show a jumpy size estimate for no quality
-    /// benefit. This is what
-    /// `selectedVideoFormatID`/`selectedAudioFormatID` default to
-    /// (`.first` on the result) before the user ever opens the options
-    /// card, so it's the tie-break that actually matters most.
+    /// benefit. This is what `selectedVideoFormatID` defaults to (`.first`
+    /// on the result) before the user ever opens the options card, so it's
+    /// the tie-break that actually matters most; `selectedAudioFormatID`
+    /// defaults to the best format in the chosen audio language instead.
     private static func sortedFormats(_ formats: [VideoFormat], where predicate: (VideoFormat) -> Bool) -> [VideoFormat] {
         formats.filter(predicate).sorted {
             if $0.qualityRank != $1.qualityRank { return $0.qualityRank > $1.qualityRank }
@@ -408,9 +413,7 @@ struct DownloadItemCard: View {
                 guard let newID, newID != settings.selectedAudioLanguageID else { return }
                 let currentExt = selectedAudioFormat?.ext
                 settings.selectedAudioLanguageID = newID
-                settings.audioOptions = FormatSelection.audioOptions(
-                    in: FormatSelection.audioFormats(settings.audioFormats, inLanguage: newID)
-                )
+                settings.audioOptions = FormatSelection.audioOptions(in: settings.audioFormats, language: newID)
                 let match = settings.audioOptions.first { $0.ext == currentExt } ?? settings.audioOptions.first
                 settings.selectedAudioFormatID = match?.format.id
             }

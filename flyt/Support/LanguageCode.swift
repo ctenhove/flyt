@@ -31,6 +31,19 @@ enum LanguageCode {
         normalized(code).split(separator: "-").first.map(String.init) ?? normalized(code)
     }
 
+    /// A readable name for `code` in the user's language, without the
+    /// "-orig"/"-desc" markers. Keeps the region or script, so "es-US" and
+    /// "es-419" (or "zh-Hans" and "zh-Hant") don't come out identical.
+    static func displayName(_ code: String) -> String {
+        var bare = code
+        for suffix in [originalSuffix, descriptiveSuffix] where bare.lowercased().hasSuffix(suffix) {
+            bare.removeLast(suffix.count)
+        }
+        return Locale.current.localizedString(forIdentifier: bare)
+            ?? Locale.current.localizedString(forLanguageCode: bare)
+            ?? bare
+    }
+
     /// How well `code` serves a wish for `preferred`, best first: 0 an exact
     /// match, 1 a more general code ("en" for "en-GB"), 2 the same base
     /// language, nil unrelated.

@@ -143,7 +143,8 @@ struct VideoFormat: Codable, Identifiable, Hashable {
     /// dubbed audio lists one audio-only format per language.
     let language: String?
     /// yt-dlp's ranking of this format's language against the video's other
-    /// languages; the original/default audio track is the one ranked highest.
+    /// languages; the original audio track is the one ranked highest — see
+    /// `FormatSelection.originalAudioLanguageIDs`.
     let languagePreference: Int?
     /// yt-dlp's free-text description, e.g. "English (US) original (default), medium".
     let formatNote: String?
@@ -172,15 +173,6 @@ struct VideoFormat: Codable, Identifiable, Hashable {
     var hasVideo: Bool {
         guard let vcodec else { return false }
         return vcodec != "none"
-    }
-
-    /// True when this looks like the video's own (original or default) audio
-    /// track rather than a dub. YouTube ranks that track above the others via
-    /// `language_preference` and also says so in `format_note`.
-    var isOriginalAudio: Bool {
-        if (languagePreference ?? 0) > 0 { return true }
-        let note = formatNote?.lowercased() ?? ""
-        return note.contains("original") || note.contains("(default)")
     }
 
     /// True if this format is audio-only.
