@@ -17,9 +17,9 @@ command-line tools with the package; build the app once, then:
 ```
 
 The private key is stored in your login keychain; the command prints the
-public key. Paste the public key into the project as the `SUPublicEDKey`
-build setting (flyt target → Build Settings → search "SUPublicEDKey", both
-Debug and Release).
+public key. Paste the public key into `Resources/Info.plist` as the value of
+`SUPublicEDKey` (the empty `<string></string>` under that key) and commit it —
+it's public, so it's safe in the repository.
 
 **Back up the private key.** Export it and keep it somewhere safe (a password
 manager):

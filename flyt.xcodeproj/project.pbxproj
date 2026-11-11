@@ -9,7 +9,6 @@
 /* Begin PBXBuildFile section */
 		E4731B962FFDC517000517F7 /* yt-dlp_macos in Resources */ = {isa = PBXBuildFile; fileRef = E4731B952FFDC517000517F7 /* yt-dlp_macos */; };
 		E4731BA22FFDC700000517F7 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = E4731BA12FFDC700000517F7 /* Sparkle */; };
-		E4731BA32FFDC700000517F7 /* Sparkle in Embed Frameworks */ = {isa = PBXBuildFile; productRef = E4731BA12FFDC700000517F7 /* Sparkle */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -28,20 +27,6 @@
 			remoteInfo = flyt;
 		};
 /* End PBXContainerItemProxy section */
-
-/* Begin PBXCopyFilesBuildPhase section */
-		E4731BA42FFDC700000517F7 /* Embed Frameworks */ = {
-			isa = PBXCopyFilesBuildPhase;
-			buildActionMask = 2147483647;
-			dstPath = "";
-			dstSubfolderSpec = 10;
-			files = (
-				E4731BA32FFDC700000517F7 /* Sparkle in Embed Frameworks */,
-			);
-			name = "Embed Frameworks";
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		E4731B6C2FFDC4B5000517F7 /* flyt.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = flyt.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -127,7 +112,6 @@
 				E4731B682FFDC4B5000517F7 /* Sources */,
 				E4731B692FFDC4B5000517F7 /* Frameworks */,
 				E4731B6A2FFDC4B5000517F7 /* Resources */,
-				E4731BA42FFDC700000517F7 /* Embed Frameworks */,
 				E4731B972FFDC540000517F7 /* ShellScript */,
 			);
 			buildRules = (
@@ -428,10 +412,9 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Resources/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = flyt;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				INFOPLIST_KEY_SUFeedURL = "https://ctenhove.github.io/flyt/appcast.xml";
-				INFOPLIST_KEY_SUPublicEDKey = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -462,10 +445,9 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Resources/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = flyt;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				INFOPLIST_KEY_SUFeedURL = "https://ctenhove.github.io/flyt/appcast.xml";
-				INFOPLIST_KEY_SUPublicEDKey = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",

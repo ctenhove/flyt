@@ -36,8 +36,8 @@ find_sparkle_bin() {
 }
 SPARKLE_BIN="$(find_sparkle_bin)"
 
-if ! grep -q 'INFOPLIST_KEY_SUPublicEDKey = "[^"]\+"' "$ROOT/flyt.xcodeproj/project.pbxproj"; then
-    echo "error: SUPublicEDKey is empty in the Xcode project — generate a key first (see RELEASING.md)" >&2
+if [[ -z "$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$ROOT/Resources/Info.plist" 2>/dev/null)" ]]; then
+    echo "error: SUPublicEDKey is empty in Resources/Info.plist — generate a key first (see RELEASING.md)" >&2
     exit 1
 fi
 
