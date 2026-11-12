@@ -6,6 +6,7 @@
 import Combine
 import Foundation
 import Sparkle
+import SwiftUI
 
 /// Wraps Sparkle's standard updater: checks the appcast named by the app's
 /// `SUFeedURL` for a newer build, and shows Sparkle's own update UI.
@@ -16,27 +17,38 @@ import Sparkle
 /// signing key yet — see RELEASING.md for generating one.
 @MainActor
 final class AppUpdater: ObservableObject {
-    /// True once a public signing key is configured and the updater is running.
-    let isConfigured: Bool
-
-    /// False while a check is already running (or the updater isn't running).
+    /// False while a check is already running, and always false when the
+    /// updater was never started for want of a signing key.
     @Published private(set) var canCheckForUpdates = false
 
     private let controller: SPUStandardUpdaterController
 
     init() {
         let publicKey = Bundle.main.object(forInfoDictionaryKey: "SUPublicEDKey") as? String
-        isConfigured = !(publicKey?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        let hasSigningKey = !(publicKey?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
         controller = SPUStandardUpdaterController(
-            startingUpdater: isConfigured,
+            startingUpdater: hasSigningKey,
             updaterDelegate: nil,
             userDriverDelegate: nil
         )
+        guard hasSigningKey else { return }
         controller.updater.publisher(for: \.canCheckForUpdates)
             .assign(to: &$canCheckForUpdates)
     }
 
     func checkForUpdates() {
         controller.checkForUpdates(nil)
+    }
+}
+
+/// The "Check for Updates…" menu item. A view of its own, observing the
+/// updater, so its enabled state follows `canCheckForUpdates` — the menu's
+/// `commands` builder isn't reliably re-run when that changes.
+struct CheckForUpdatesButton: View {
+    @ObservedObject var updater: AppUpdater
+
+    var body: some View {
+        Button("Check for Updates…") { updater.checkForUpdates() }
+            .disabled(!updater.canCheckForUpdates)
     }
 }

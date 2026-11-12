@@ -50,8 +50,7 @@ struct FlytApp: App {
         .commands {
             CommandGroup(replacing: .newItem) { }
             CommandGroup(after: .appInfo) {
-                Button("Check for Updates…") { updater.checkForUpdates() }
-                    .disabled(!updater.isConfigured || !updater.canCheckForUpdates)
+                CheckForUpdatesButton(updater: updater)
             }
         }
     }
