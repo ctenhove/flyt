@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>flyt — FetchLight for YouTube</title>
+<meta name="description" content="A lightweight, native macOS app for downloading YouTube videos. Paste a link, pick a format, download.">
+<link rel="icon" href="icon.png">
+<style>
+  :root {
+    --bg: #f8fafc; --panel: #eef2f6; --text: #334155; --heading: #0f172a;
+    --muted: #64748b; --border: #dbe2ea; --sky: #0ea5e9; --sky-hover: #0284c7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0b1424; --panel: #111c2e; --text: #cbd5e1; --heading: #f1f5f9;
+      --muted: #94a3b8; --border: #1e293b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+  }
+  main { max-width: 640px; margin: 0 auto; padding: 72px 20px 56px; }
+  header { text-align: center; margin-bottom: 56px; }
+  header img { width: 128px; height: 128px; }
+  h1 { margin: 12px 0 0; font-size: 44px; letter-spacing: -0.02em; color: var(--heading); }
+  .tagline { margin: 2px 0 20px; color: var(--muted); font-style: italic; }
+  .lede { margin: 0 auto 28px; max-width: 460px; font-size: 18px; }
+  .button {
+    display: inline-block; padding: 12px 26px; border-radius: 10px;
+    background: var(--sky); color: #fff; font-weight: 600; text-decoration: none;
+  }
+  .button:hover { background: var(--sky-hover); }
+  .requires { margin-top: 12px; font-size: 13.5px; color: var(--muted); }
+  section {
+    margin-top: 20px; padding: 22px 24px; border: 1px solid var(--border);
+    border-radius: 12px; background: var(--panel);
+  }
+  h2 { margin: 0 0 10px; font-size: 18px; color: var(--heading); }
+  ul, ol { margin: 0; padding-left: 20px; }
+  li + li { margin-top: 6px; }
+  section p { margin: 0 0 10px; }
+  a { color: var(--sky); }
+  footer { margin-top: 40px; text-align: center; font-size: 13.5px; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <img src="icon.png" alt="flyt app icon">
+    <h1>flyt</h1>
+    <p class="tagline">FetchLight for YouTube.</p>
+    <p class="lede">A lightweight, native macOS app for downloading YouTube videos. Paste a link, pick a format, download.</p>
+    <a class="button" href="https://github.com/ctenhove/flyt/releases">Download for Mac</a>
+    <p class="requires">Requires macOS 14.6 or later</p>
+  </header>
+
+  <section>
+    <h2>What it does</h2>
+    <ul>
+      <li>Downloads at the resolution, container and audio track you choose, or audio only.</li>
+      <li>Trims to one or more sections of a video by timestamp.</li>
+      <li>Saves subtitles alongside the video or embedded in it.</li>
+      <li>Runs several downloads at once and keeps a history of them.</li>
+      <li>Keeps its own copy of yt-dlp up to date, so it keeps working as YouTube changes.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Opening it the first time</h2>
+    <p>flyt isn't notarized, so macOS blocks it the first time you open it. To allow it:</p>
+    <ol>
+      <li>Try to open flyt. A dialog says it can't be opened.</li>
+      <li>Open <strong>System Settings → Privacy &amp; Security</strong>.</li>
+      <li>In the Security section, click <strong>Open Anyway</strong> next to the message about flyt.</li>
+      <li>Confirm in the dialog that appears.</li>
+    </ol>
+    <p style="margin: 10px 0 0">You only need to do this once.</p>
+  </section>
+
+  <footer>
+    Built on <a href="https://github.com/yt-dlp/yt-dlp">yt-dlp</a> and <a href="https://ffmpeg.org">ffmpeg</a>.
+    Free software under the GPL-3.0 —
+    <a href="https://github.com/ctenhove/flyt">source on GitHub</a>.
+  </footer>
+</main>
+</body>
+</html>
