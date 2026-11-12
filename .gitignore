@@ -8,3 +8,6 @@ build/
 # Swift Package Manager
 .swiftpm/
 .build/
+
+# Python
+__pycache__/

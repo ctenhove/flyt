@@ -10,6 +10,7 @@ import SwiftUI
 @main
 struct FlytApp: App {
     @State private var dependencyManager = DependencyManager()
+    @StateObject private var updater = AppUpdater()
 
     init() {
         // Before any download can start: clears hidden scratch folders a
@@ -48,6 +49,9 @@ struct FlytApp: App {
         // spawn a second copy of the main window.
         .commands {
             CommandGroup(replacing: .newItem) { }
+            CommandGroup(after: .appInfo) {
+                CheckForUpdatesButton(updater: updater)
+            }
         }
     }
 }

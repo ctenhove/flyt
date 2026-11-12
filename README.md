@@ -27,6 +27,8 @@ On first launch, flyt also downloads and verifies a small `ffmpeg` binary it nee
 
 flyt keeps its bundled `yt-dlp` up to date automatically (checked once a day in the background), so it keeps working as YouTube changes without you needing to update the app.
 
+Releases after 0.5.0 can also update flyt itself: they check for a new version (**flyt → Check for Updates…**) and offer to install it. 0.5.0 and earlier have to be replaced by hand. A copy you build yourself has that menu item disabled unless an update signing key is set up — see [RELEASING.md](RELEASING.md).
+
 ## Requirements
 
 - macOS 14.6+
@@ -38,7 +40,7 @@ flyt keeps its bundled `yt-dlp` up to date automatically (checked once a day in 
 open flyt.xcodeproj
 ```
 
-Build and run the `flyt` scheme (⌘R). No package dependencies to resolve, no environment setup beyond Xcode — `yt-dlp` ships bundled as a resource in `Resources/`, and `ffmpeg` is downloaded and verified automatically on first launch.
+Build and run the `flyt` scheme (⌘R). Xcode fetches the one package dependency ([Sparkle](https://sparkle-project.org)) itself, and there's no environment setup beyond Xcode — `yt-dlp` ships bundled as a resource in `Resources/`, and `ffmpeg` is downloaded and verified automatically on first launch.
 
 ## Project structure
 

@@ -1,0 +1,9 @@
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>flyt</title>
+        <link>https://ctenhove.github.io/flyt/appcast.xml</link>
+        <description>Updates for flyt</description>
+        <language>en</language>
+    </channel>
+</rss>
